@@ -1,0 +1,134 @@
+"""
+Postgres access layer. Keeps raw SQL in one place so fetch.py stays
+focused on "get data from GitHub, validate it" rather than SQL details.
+"""
+
+import json
+import os
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from typing import Optional
+
+import psycopg2
+import psycopg2.extras
+
+from pipeline.schema import GitHubIssue
+
+
+def get_conn_params() -> dict:
+    return {
+        "host": os.environ.get("POSTGRES_HOST", "localhost"),
+        "port": os.environ.get("POSTGRES_PORT", "5432"),
+        "dbname": os.environ.get("POSTGRES_DB", "rag_pipeline"),
+        "user": os.environ.get("POSTGRES_USER", "rag_user"),
+        "password": os.environ.get("POSTGRES_PASSWORD", "rag_pass"),
+    }
+
+
+@contextmanager
+def get_connection():
+    conn = psycopg2.connect(**get_conn_params())
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_last_synced_updated_at(conn) -> Optional[datetime]:
+    """
+    Reads the high-water mark from the most recent successful run.
+    This is what makes ingestion incremental: next GitHub call asks
+    for 'since=<this timestamp>' instead of pulling everything.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT last_synced_updated_at
+            FROM pipeline_runs
+            WHERE last_synced_updated_at IS NOT NULL
+            ORDER BY run_started_at DESC
+            LIMIT 1
+            """
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def start_run(conn) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO pipeline_runs (run_started_at) VALUES (now()) RETURNING id"
+        )
+        run_id = cur.fetchone()[0]
+    conn.commit()
+    return run_id
+
+
+def finish_run(conn, run_id: int, fetched: int, valid: int, quarantined: int, skipped: int, newest_updated_at: Optional[datetime]):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE pipeline_runs
+            SET run_finished_at = now(),
+                fetched_count = %s,
+                valid_count = %s,
+                quarantined_count = %s,
+                skipped_count = %s,
+                last_synced_updated_at = COALESCE(%s, last_synced_updated_at)
+            WHERE id = %s
+            """,
+            (fetched, valid, quarantined, skipped, newest_updated_at, run_id),
+        )
+    conn.commit()
+
+
+def upsert_issue(conn, issue: GitHubIssue):
+    """
+    Insert or update an issue. On conflict (same idseen again),
+    we update the content_hash and embedded flag stays as-is unless
+    the hash actually changed -- that's the incremental-embedding hook.
+    """
+    new_hash = issue.content_hash()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO issues (
+                id, repo, number, title, body, state, labels,
+                created_at, updated_at, author, comments_count, content_hash
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (id) DO UPDATE SET  -- if same issue id is seen again, update the row with new data (only some fields are updated, not all because some fields like created_at should not change)
+                title = EXCLUDED.title,
+                body = EXCLUDED.body,
+                state = EXCLUDED.state,
+                labels = EXCLUDED.labels,
+                updated_at = EXCLUDED.updated_at,
+                comments_count = EXCLUDED.comments_count,
+                -- only flip embedded back to false if content actually changed
+                embedded = CASE
+                    WHEN issues.content_hash != EXCLUDED.content_hash THEN false  -- if the content hash changed, set embedded to false (meaning it needs re-embedding)
+                    ELSE issues.embedded  -- if the content hash did not change, keep embedded as-is (no need to re-embed)
+                END,
+                content_hash = EXCLUDED.content_hash
+            """,
+            (
+                issue.id, issue.repo, issue.number, issue.title, issue.body,
+                issue.state, issue.labels, issue.created_at, issue.updated_at,
+                issue.author, issue.comments_count, new_hash,
+            ),
+        )
+
+
+def insert_quarantine(conn, repo: str, raw_payload: dict, error_reason: str):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO quarantine (repo, raw_payload, error_reason)
+            VALUES (%s, %s, %s)
+            """,
+            (repo, json.dumps(raw_payload), error_reason),
+        )
