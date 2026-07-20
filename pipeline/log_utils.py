@@ -30,15 +30,29 @@ def _configure_root_logging():
     if _configured:
         return
 
-    handler = logging.StreamHandler()
-    handler.setFormatter(
-        logging.Formatter("%(asctime)s %(levelname)s [%(name)s run_id=%(run_id)s] %(message)s")
-    )
-    handler.addFilter(_RunIdFilter())
-
     root = logging.getLogger()
+
+    if root.handlers:
+        # Something else (Airflow, uvicorn, pytest, ...) already configured
+        # root logging before our code ran. Adding our OWN StreamHandler on
+        # top of that is dangerous in Airflow specifically: Airflow
+        # redirects sys.stdout/stderr through its own logger during task
+        # execution, so a new handler writing to that redirected stream
+        # re-enters the logging system, which triggers our handler again,
+        # forever -- this caused a real RecursionError in production here.
+        # Instead, just attach our run_id-safety filter to the existing
+        # handlers and leave their formatting alone.
+        for handler in root.handlers:
+            handler.addFilter(_RunIdFilter())
+    else:
+        handler = logging.StreamHandler()
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s [%(name)s run_id=%(run_id)s] %(message)s")
+        )
+        handler.addFilter(_RunIdFilter())
+        root.addHandler(handler)
+
     root.setLevel(logging.INFO)
-    root.addHandler(handler)
 
     # These libraries are chatty at INFO level (every HTTP call, every
     # tokenizer load) and it's not signal we care about in our pipeline logs.

@@ -48,3 +48,12 @@ CREATE TABLE IF NOT EXISTS drift_alerts (
     description TEXT NOT NULL,
     detected_at TIMESTAMPTZ DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS field_mapping_overrides (
+    id SERIAL PRIMARY KEY,
+    repo TEXT NOT NULL,
+    original_field TEXT NOT NULL,
+    mapped_field TEXT NOT NULL,
+    confidence NUMERIC NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now()
+);

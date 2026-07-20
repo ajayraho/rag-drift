@@ -31,6 +31,8 @@ log = get_run_logger(__name__)
 # a much higher rate.
 GEMINI_RPM_LIMIT = int(os.environ.get("GEMINI_RPM_LIMIT", "5"))
 _MIN_INTERVAL_SECONDS = 60.0 / GEMINI_RPM_LIMIT
+_MAX_INTERVAL_SECONDS = 120.0  # cap so backoff can't grow unboundedly on repeated 429s
+_MAX_RETRIES_PER_QUESTION = 4
 
 # Fixed question set so eval scores are comparable run-over-run. Kept
 # generic (not tied to specific issue numbers) since the underlying data
@@ -64,6 +66,11 @@ don't penalize honest "no results" as harshly as actively wrong results.
 Respond with ONLY a JSON object: {{"score": <int 1-5>, "reason": "<one sentence>"}}"""
 
 
+def _is_rate_limit_error(e: Exception) -> bool:
+    text = str(e)
+    return "429" in text or "RESOURCE_EXHAUSTED" in text or "rate limit" in text.lower()
+
+
 def _judge(llm, question: str, results: list[dict]) -> dict:
     if not results:
         results_text = "No relevant issues found."
@@ -91,21 +98,40 @@ def run_eval() -> dict:
 
     results = []
     last_call_at = 0.0
+    # Adaptive: starts at the theoretical min interval for GEMINI_RPM_LIMIT,
+    # but DOUBLES (up to _MAX_INTERVAL_SECONDS) the first time a 429 is
+    # actually hit, and stays doubled for the rest of the run rather than
+    # resetting -- if the quota was tighter than advertised once, it's
+    # likely to be again, so keep the safer pace instead of immediately
+    # racing back to the theoretical minimum.
+    current_interval = _MIN_INTERVAL_SECONDS
 
     for question in TEST_QUESTIONS:
-        # Pace calls to stay under GEMINI_RPM_LIMIT rather than firing as
-        # fast as possible and relying on the SDK's retry-on-429 to bail
-        # us out -- that worked for a couple retries last time and then
-        # still failed once retries were exhausted.
         elapsed = time.monotonic() - last_call_at
-        if elapsed < _MIN_INTERVAL_SECONDS:
-            wait = _MIN_INTERVAL_SECONDS - elapsed
-            log.info("Pacing: waiting %.1fs before next judge call (rate limit %s/min)", wait, GEMINI_RPM_LIMIT)
+        if elapsed < current_interval:
+            wait = current_interval - elapsed
+            log.info("Pacing: waiting %.1fs before next judge call (interval=%.1fs)", wait, current_interval)
             time.sleep(wait)
 
         retrieved = retrieve_issues(question, n_results=5)
-        judgment = _judge(llm, question, retrieved)
-        last_call_at = time.monotonic()
+
+        judgment = None
+        for attempt in range(1, _MAX_RETRIES_PER_QUESTION + 1):
+            try:
+                judgment = _judge(llm, question, retrieved)
+                last_call_at = time.monotonic()
+                break
+            except Exception as e:
+                if not _is_rate_limit_error(e) or attempt == _MAX_RETRIES_PER_QUESTION:
+                    raise
+
+                current_interval = min(current_interval * 2, _MAX_INTERVAL_SECONDS)
+                log.warning(
+                    "Rate limited (attempt %s/%s). Doubling pacing interval to %.1fs and retrying.",
+                    attempt, _MAX_RETRIES_PER_QUESTION, current_interval,
+                )
+                time.sleep(current_interval)
+                last_call_at = time.monotonic()
 
         results.append({
             "question": question,

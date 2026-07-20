@@ -44,6 +44,7 @@ def run_full_pipeline(repo: str | None = None, run_eval_step: bool = True) -> di
             "embedding_model": EMBEDDING_MODEL,
             "llm_model": GEMINI_MODEL,
         })
+        mlflow.set_tag("run_type", "full_pipeline")
 
         # Stage 1: ingest
         ingestion_result = run_ingestion(repo=repo)
@@ -53,6 +54,23 @@ def run_full_pipeline(repo: str | None = None, run_eval_step: bool = True) -> di
             "quarantined_count": ingestion_result["quarantined"],
             "skipped_count": ingestion_result["skipped"],
         })
+
+        # Schema drift: surfaced as its own metrics so a run with drift is
+        # visible directly in the MLflow runs table, not just buried in logs.
+        drift_alerts = ingestion_result.get("drift_alerts", [])
+        critical_drift = sum(1 for a in drift_alerts if a["severity"] == "critical")
+        warning_drift = sum(1 for a in drift_alerts if a["severity"] == "warning")
+        mlflow.log_metrics({
+            "drift_alerts_critical": critical_drift,
+            "drift_alerts_warning": warning_drift,
+        })
+        if drift_alerts:
+            mlflow.set_tag("schema_drift_detected", "true")
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+                json.dump(drift_alerts, f, indent=2)
+                drift_path = f.name
+            mlflow.log_artifact(drift_path, artifact_path="drift")
+            os.unlink(drift_path)
 
         # Stage 2: embed (only embeds what's new/changed -- see embed.py)
         embedding_result = run_embedding()
@@ -93,9 +111,44 @@ def run_full_pipeline(repo: str | None = None, run_eval_step: bool = True) -> di
         return result
 
 
+def run_eval_only() -> dict:
+    """
+    Runs just the retrieval-quality eval as its own MLflow run, decoupled
+    from ingestion. Used by a separate, less-frequent Airflow DAG (daily,
+    not hourly) since eval costs ~10 judge LLM calls against the same
+    tight free-tier quota the agent uses -- running it every ingestion
+    tick would be wasteful and would compete with real agent traffic.
+    """
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+    mlflow.set_experiment(MLFLOW_EXPERIMENT)
+
+    with mlflow.start_run() as run:
+        mlflow.set_tag("run_type", "eval_only")
+        mlflow.log_param("llm_model", GEMINI_MODEL)
+
+        eval_summary = run_eval()
+        mlflow.log_metric("retrieval_eval_avg_score", eval_summary["avg_score"])
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(eval_summary, f, indent=2)
+            eval_path = f.name
+        mlflow.log_artifact(eval_path, artifact_path="eval")
+        os.unlink(eval_path)
+
+        log.info("Eval-only MLflow run %s complete: avg_score=%s", run.info.run_id, eval_summary["avg_score"])
+        return {"mlflow_run_id": run.info.run_id, "eval": eval_summary}
+
+
 if __name__ == "__main__":
-    result = run_full_pipeline()
-    printable = {k: v for k, v in result.items() if k != "eval"}
-    print(json.dumps(printable, indent=2, default=str))
-    if "eval" in result:
+    import sys
+
+    if "--eval-only" in sys.argv:
+        result = run_eval_only()
+        print(json.dumps({"mlflow_run_id": result["mlflow_run_id"]}, indent=2))
         print(f"\nRetrieval eval avg score: {result['eval']['avg_score']} / 5")
+    else:
+        result = run_full_pipeline()
+        printable = {k: v for k, v in result.items() if k != "eval"}
+        print(json.dumps(printable, indent=2, default=str))
+        if "eval" in result:
+            print(f"\nRetrieval eval avg score: {result['eval']['avg_score']} / 5")

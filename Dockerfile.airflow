@@ -1,4 +1,23 @@
 FROM apache/airflow:2.9.3-python3.11
 
+# Airflow's own environment stays completely untouched by our pipeline's
+# dependencies (langchain, mlflow, chromadb, etc). Mixing a modern LLM
+# stack directly into Airflow's site-packages caused real problems here:
+# a pydantic version fight, and a genuine RecursionError in Airflow's own
+# logging/timezone code caused by a transitively-upgraded pendulum.
+# Airflow 2.9.3 (mid-2024) and today's LLM stack simply need incompatible
+# dependency versions -- so instead, our pipeline code runs in a fully
+# separate virtualenv that the DAG shells out to via BashOperator. Zero
+# shared dependency resolution between the two environments.
 COPY requirements.txt /requirements.txt
-RUN pip install --no-cache-dir -r /requirements.txt
+
+# The base image runs as the non-root 'airflow' user, which can't write
+# to /opt -- switch to root just for creating/populating the venv, then
+# switch back so the rest of the image (and the running containers)
+# keep Airflow's normal non-root user.
+USER root
+RUN python -m venv /opt/pipeline_venv \
+    && grep -v '^apache-airflow' /requirements.txt > /pipeline_requirements.txt \
+    && /opt/pipeline_venv/bin/pip install --no-cache-dir -r /pipeline_requirements.txt \
+    && chown -R airflow: /opt/pipeline_venv
+USER airflow

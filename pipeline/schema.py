@@ -32,7 +32,7 @@ class GitHubIssue(BaseModel):
     title: str = Field(..., min_length=1)
     body: Optional[str] = None
     state: str
-    labels: list[str] = Field(default_factory=list)   # why not labels: list[str] = []  because mutable default arguments are a bad idea in Python. If we used labels: list[str] = [], then all instances of GitHubIssue would share the same list object as the default value for labels. This could lead to unexpected behavior if one instance modifies the list, as it would affect all other instances that use the default value. Using default_factory=list ensures that each instance gets its own separate list. 
+    labels: list[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
     author: Optional[str] = None
@@ -62,31 +62,60 @@ class GitHubIssue(BaseModel):
         change the semantic content an agent would retrieve.
         """
         payload = f"{self.title}|{self.body or ''}|{self.state}|{','.join(sorted(self.labels))}"
-        return hashlib.sha256(payload.encode("utf-8")).hexdigest()   # sha256 because it's fast and collision-resistant enough for our purposes
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
-    @classmethod   # like a static method
-    def from_github_payload(cls, raw: dict, repo: str) -> "GitHubIssue":
+    @classmethod
+    def from_github_payload(
+        cls, raw: dict, repo: str, field_overrides: dict[str, str] | None = None
+    ) -> "GitHubIssue":
         """
         Maps GitHub's raw API JSON shape into our schema.
         This is the ONE place that knows GitHub's field names, so if GitHub
         renames/restructures something, this is the single point of failure
-        (and the thing our drift detector on Day 3 will be watching).
+        (and the thing our drift detector watches).
+
+        field_overrides is a learned mapping from self_heal.py, e.g.
+        {"state": "status"} if the drift detector previously figured out
+        that `state` got renamed to `status` at the source. When the
+        expected key is missing, we fall back to the override's key
+        before giving up -- this is what makes self-healing actually take
+        effect on the NEXT ingestion run after it's learned.
         """
         # GitHub's issues endpoint also returns pull requests -- they have a
         # "pull_request" key when it's actually a PR, not a plain issue.
         if "pull_request" in raw:
             raise NotAnIssueError("payload is a pull request, not an issue")
 
+        overrides = field_overrides or {}
+
+        def get(field_name: str, default=None):
+            if field_name in raw and raw[field_name] is not None:
+                return raw[field_name]
+            override_key = overrides.get(field_name)
+            if override_key and override_key in raw:
+                return raw[override_key]
+            return default
+
+        raw_labels = get("labels")
+        if isinstance(raw_labels, str):
+            # Handles a healed mapping onto a field that stores labels as a
+            # delimited string rather than a list -- e.g. "bug,enhancement".
+            labels = [x.strip() for x in raw_labels.split(",") if x.strip()]
+        elif raw_labels:
+            labels = [l["name"] if isinstance(l, dict) else l for l in raw_labels]
+        else:
+            labels = []
+
         return cls(
-            id=raw["id"],
+            id=get("id"),
             repo=repo,
-            number=raw["number"],
-            title=raw["title"],
-            body=raw.get("body"),
-            state=raw["state"],
-            labels=[l["name"] if isinstance(l, dict) else l for l in raw.get("labels", [])],
-            created_at=raw["created_at"],
-            updated_at=raw["updated_at"],
-            author=(raw.get("user") or {}).get("login"),
-            comments_count=raw.get("comments", 0),
+            number=get("number"),
+            title=get("title"),
+            body=get("body"),
+            state=get("state"),
+            labels=labels,
+            created_at=get("created_at"),
+            updated_at=get("updated_at"),
+            author=(get("user") or {}).get("login"),
+            comments_count=get("comments", 0),
         )

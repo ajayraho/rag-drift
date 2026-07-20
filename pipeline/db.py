@@ -205,3 +205,43 @@ def save_drift_alert(conn, repo: str, severity: str, description: str):
             (repo, severity, description),
         )
     conn.commit()
+
+
+def save_mapping_override(conn, repo: str, original_field: str, mapped_field: str, confidence: float):
+    """
+    Records a self-healed field mapping (e.g. 'state' -> 'status'). Always
+    inserts a new row rather than updating in place -- keeps a full history
+    of healing decisions over time, and get_active_mapping_overrides just
+    reads the most recent one per field.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO field_mapping_overrides (repo, original_field, mapped_field, confidence)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (repo, original_field, mapped_field, confidence),
+        )
+    conn.commit()
+
+
+def get_active_mapping_overrides(conn, repo: str) -> dict:
+    """
+    Returns {original_field: mapped_field} for the most recent healed
+    mapping per field. This is what schema.py's from_github_payload
+    consults to extract a field that was renamed at the source -- e.g. if
+    'state' was auto-mapped to 'status', a payload with only 'status'
+    still gets extracted correctly.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT ON (original_field) original_field, mapped_field
+            FROM field_mapping_overrides
+            WHERE repo = %s
+            ORDER BY original_field, created_at DESC
+            """,
+            (repo,),
+        )
+        rows = cur.fetchall()
+    return {row[0]: row[1] for row in rows}

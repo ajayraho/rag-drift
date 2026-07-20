@@ -17,6 +17,7 @@ from pydantic import ValidationError
 
 from pipeline.db import (
     finish_run,
+    get_active_mapping_overrides,
     get_connection,
     get_last_synced_updated_at,
     insert_quarantine,
@@ -112,6 +113,9 @@ def run_ingestion(repo: str | None = None, token: str | None = None, max_pages: 
         run_id = start_run(conn)
         log = get_run_logger(__name__, run_id)
         since = get_last_synced_updated_at(conn)
+        field_overrides = get_active_mapping_overrides(conn, repo)
+        if field_overrides:
+            log.info("Using %s self-healed field mapping override(s): %s", len(field_overrides), field_overrides)
         log.info("Starting run for repo=%s since=%s", repo, since)
 
         for page in range(1, max_pages + 1):
@@ -123,7 +127,7 @@ def run_ingestion(repo: str | None = None, token: str | None = None, max_pages: 
                 fetched_count += 1
                 raw_payloads_sample.append(raw)
                 try:
-                    issue = GitHubIssue.from_github_payload(raw, repo=repo)
+                    issue = GitHubIssue.from_github_payload(raw, repo=repo, field_overrides=field_overrides)
                 except NotAnIssueError:
                     # Expected, by-design exclusion -- not an error, don't quarantine.
                     skipped_count += 1
@@ -164,6 +168,7 @@ def run_ingestion(repo: str | None = None, token: str | None = None, max_pages: 
         "skipped": skipped_count,
         "newest_updated_at": str(newest_updated_at) if newest_updated_at else None,
         "drift_alerts": drift_result["alerts"],
+        "heal_decisions": drift_result["heal_decisions"],
     }
     get_run_logger(__name__, run_id).info("Run complete: %s", result)
     return result

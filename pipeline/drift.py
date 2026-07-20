@@ -110,12 +110,16 @@ def check_drift(conn, repo: str, raw_payloads: list[dict]) -> dict:
       2. compare against the most recently stored fingerprint for this repo
       3. store this run's fingerprint (becomes the baseline for next time)
       4. persist + log any alerts
+      5. attempt self-healing on critical "field disappeared" alerts --
+         high-confidence mappings get persisted so schema.py's
+         from_github_payload can use them starting next run
     """
-    from pipeline.db import get_latest_fingerprint, save_drift_alert, save_fingerprint
+    from pipeline.db import get_latest_fingerprint, save_drift_alert, save_fingerprint, save_mapping_override
+    from pipeline.self_heal import attempt_self_heal
 
     if not raw_payloads:
         log.info("No raw payloads this run -- skipping drift check.")
-        return {"alerts": [], "baseline_established": False}
+        return {"alerts": [], "baseline_established": False, "heal_decisions": []}
 
     current_fingerprint = compute_fingerprint(raw_payloads)
     baseline = get_latest_fingerprint(conn, repo)
@@ -124,7 +128,7 @@ def check_drift(conn, repo: str, raw_payloads: list[dict]) -> dict:
 
     if baseline is None:
         log.info("No prior schema baseline for repo=%s -- this run establishes the baseline.", repo)
-        return {"alerts": [], "baseline_established": True}
+        return {"alerts": [], "baseline_established": True, "heal_decisions": []}
 
     alerts = detect_drift(current_fingerprint, baseline)
     for alert in alerts:
@@ -137,7 +141,12 @@ def check_drift(conn, repo: str, raw_payloads: list[dict]) -> dict:
     if not alerts:
         log.info("No schema drift detected this run (repo=%s, %s payloads sampled).", repo, len(raw_payloads))
 
-    return {"alerts": alerts, "baseline_established": False}
+    heal_decisions = attempt_self_heal(repo, alerts, raw_payloads, baseline, CORE_FIELDS)
+    for decision in heal_decisions:
+        if decision["status"] == "self_healed":
+            save_mapping_override(conn, repo, decision["field"], decision["candidate_key"], decision["confidence"])
+
+    return {"alerts": alerts, "baseline_established": False, "heal_decisions": heal_decisions}
 
 
 if __name__ == "__main__":

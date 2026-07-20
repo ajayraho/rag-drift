@@ -1,18 +1,24 @@
 """
-Airflow DAG: pulls GitHub issues on a schedule, validates them,
-lands valid rows in Postgres, quarantines genuinely malformed ones.
+Airflow DAG: runs the full ingest -> embed pipeline on a schedule,
+tracked as an MLflow run.
 
-This DAG is deliberately thin -- it just calls run_ingestion() from
-pipeline/fetch.py. Airflow's job is scheduling/retries/observability,
-not owning the business logic. Keeping the logic testable and runnable
-standalone (python -m pipeline.fetch) outside Airflow is why we built
-it that way from the start.
+Uses BashOperator to shell out to a separate virtualenv
+(/opt/pipeline_venv) rather than importing pipeline code directly into
+Airflow's own Python process. Airflow 2.9.3 and our pipeline's LLM stack
+(langchain, mlflow, chromadb) need incompatible dependency versions --
+importing pipeline modules directly into Airflow's process caused a real
+RecursionError in Airflow's own logging code from a transitively-
+upgraded pendulum. Full isolation avoids that entirely.
+
+Eval is intentionally NOT run here -- see rag_pipeline_eval.py, a
+separate daily DAG -- since eval costs LLM calls against a tight
+free-tier quota and shouldn't fire every hour.
 """
 
 from datetime import datetime, timedelta
 
 from airflow import DAG
-from airflow.operators.python import PythonOperator
+from airflow.operators.bash import BashOperator
 
 default_args = {
     "owner": "rag-pipeline",
@@ -20,38 +26,19 @@ default_args = {
     "retry_delay": timedelta(minutes=5),
 }
 
-
-def _run_ingestion(**context):
-    # Imported inside the callable, not at module top-level: Airflow parses
-    # every DAG file repeatedly to build its UI, so heavy/DB-touching imports
-    # at module scope slow that down. Keeping them inside the task callable
-    # is the standard Airflow pattern.
-    from pipeline.fetch import run_ingestion
-
-    result = run_ingestion()
-
-    # Push to XCom so downstream tasks (or a future drift-check task on Day 3)
-    # can read this run's stats without re-querying Postgres.
-    context["ti"].xcom_push(key="ingestion_result", value=result)
-
-    if result["quarantined"] > 0:
-        print(f"WARNING: {result['quarantined']} records quarantined this run. Check the quarantine table.")
-
-    return result
-
-
 with DAG(
     dag_id="ingest_github_issues",
-    description="Incrementally pull, validate, and land GitHub issues in Postgres",
+    description="Incrementally pull, validate, embed GitHub issues; tracked in MLflow",
     default_args=default_args,
     schedule_interval="@hourly",
     start_date=datetime(2026, 1, 1),
     catchup=False,
-    max_active_runs=1,
+    max_active_runs=1,  # prevents overlapping runs from racing on the same
+                         # `since` high-water mark and double-fetching
     tags=["rag-pipeline", "ingestion"],
 ) as dag:
 
-    ingest_task = PythonOperator(
-        task_id="fetch_and_validate_issues",
-        python_callable=_run_ingestion,
+    pipeline_task = BashOperator(
+        task_id="run_full_pipeline",
+        bash_command="cd /opt/airflow && /opt/pipeline_venv/bin/python -m pipeline.mlflow_tracking",
     )
