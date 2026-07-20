@@ -33,3 +33,18 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     skipped_count INT DEFAULT 0,
     last_synced_updated_at TIMESTAMPTZ
 );
+
+CREATE TABLE IF NOT EXISTS schema_snapshots (
+    id SERIAL PRIMARY KEY,
+    repo TEXT NOT NULL,
+    fingerprint JSONB NOT NULL,
+    captured_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS drift_alerts (
+    id SERIAL PRIMARY KEY,
+    repo TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    description TEXT NOT NULL,
+    detected_at TIMESTAMPTZ DEFAULT now()
+);

@@ -23,24 +23,11 @@ from pipeline.db import (
     start_run,
     upsert_issue,
 )
+from pipeline.drift import check_drift
+from pipeline.log_utils import get_run_logger
 from pipeline.schema import GitHubIssue, NotAnIssueError
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s [run_id=%(run_id)s] %(message)s",
-)
-base_logger = logging.getLogger(__name__)
-
 GITHUB_API = "https://api.github.com"
-
-
-def get_run_logger(run_id: int | str = "-") -> logging.LoggerAdapter:
-    """
-    Every log line from a run gets tagged with its run_id automatically.
-    Once Airflow/MLflow enter the picture, grepping logs for one specific
-    run (or correlating a failed run to its MLflow entry) becomes trivial.
-    """
-    return logging.LoggerAdapter(base_logger, {"run_id": run_id})
 
 
 def build_session(token: str | None) -> requests.Session:
@@ -117,12 +104,13 @@ def run_ingestion(repo: str | None = None, token: str | None = None, max_pages: 
     quarantined_count = 0
     skipped_count = 0
     newest_updated_at = None
+    raw_payloads_sample = []  # feeds the schema drift fingerprint below
 
     session = build_session(token)
 
     with get_connection() as conn:
         run_id = start_run(conn)
-        log = get_run_logger(run_id)
+        log = get_run_logger(__name__, run_id)
         since = get_last_synced_updated_at(conn)
         log.info("Starting run for repo=%s since=%s", repo, since)
 
@@ -133,6 +121,7 @@ def run_ingestion(repo: str | None = None, token: str | None = None, max_pages: 
 
             for raw in issues_raw:
                 fetched_count += 1
+                raw_payloads_sample.append(raw)
                 try:
                     issue = GitHubIssue.from_github_payload(raw, repo=repo)
                 except NotAnIssueError:
@@ -162,6 +151,8 @@ def run_ingestion(repo: str | None = None, token: str | None = None, max_pages: 
             if len(issues_raw) < 100:
                 break  # last page
 
+        drift_result = check_drift(conn, repo, raw_payloads_sample)
+
         finish_run(conn, run_id, fetched_count, valid_count, quarantined_count, skipped_count, newest_updated_at)
 
     result = {
@@ -172,8 +163,9 @@ def run_ingestion(repo: str | None = None, token: str | None = None, max_pages: 
         "quarantined": quarantined_count,
         "skipped": skipped_count,
         "newest_updated_at": str(newest_updated_at) if newest_updated_at else None,
+        "drift_alerts": drift_result["alerts"],
     }
-    get_run_logger(run_id).info("Run complete: %s", result)
+    get_run_logger(__name__, run_id).info("Run complete: %s", result)
     return result
 
 

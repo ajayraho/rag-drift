@@ -101,7 +101,7 @@ def upsert_issue(conn, issue: GitHubIssue):
                 created_at, updated_at, author, comments_count, content_hash
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (id) DO UPDATE SET  -- if same issue id is seen again, update the row with new data (only some fields are updated, not all because some fields like created_at should not change)
+            ON CONFLICT (id) DO UPDATE SET
                 title = EXCLUDED.title,
                 body = EXCLUDED.body,
                 state = EXCLUDED.state,
@@ -110,8 +110,8 @@ def upsert_issue(conn, issue: GitHubIssue):
                 comments_count = EXCLUDED.comments_count,
                 -- only flip embedded back to false if content actually changed
                 embedded = CASE
-                    WHEN issues.content_hash != EXCLUDED.content_hash THEN false  -- if the content hash changed, set embedded to false (meaning it needs re-embedding)
-                    ELSE issues.embedded  -- if the content hash did not change, keep embedded as-is (no need to re-embed)
+                    WHEN issues.content_hash != EXCLUDED.content_hash THEN false
+                    ELSE issues.embedded
                 END,
                 content_hash = EXCLUDED.content_hash
             """,
@@ -132,3 +132,76 @@ def insert_quarantine(conn, repo: str, raw_payload: dict, error_reason: str):
             """,
             (repo, json.dumps(raw_payload), error_reason),
         )
+
+
+def get_unembedded_issues(conn, limit: int = 200) -> list[dict]:
+    """
+    Returns issues where embedded=false -- i.e. brand new issues, or
+    issues whose content_hash changed since they were last embedded
+    (upsert_issue flips embedded back to false in that case). This is
+    the query that makes embedding incremental instead of a full re-embed.
+    """
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT id, repo, number, title, body, state, labels, updated_at
+            FROM issues
+            WHERE embedded = false
+            ORDER BY updated_at ASC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        return list(cur.fetchall())
+
+
+def mark_embedded(conn, issue_ids: list[int]):
+    if not issue_ids:
+        return
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE issues SET embedded = true WHERE id = ANY(%s)",
+            (issue_ids,),
+        )
+    conn.commit()
+
+
+def save_fingerprint(conn, repo: str, fingerprint: dict):
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO schema_snapshots (repo, fingerprint) VALUES (%s, %s)",
+            (repo, json.dumps(fingerprint)),
+        )
+    conn.commit()
+
+
+def get_latest_fingerprint(conn, repo: str) -> Optional[dict]:
+    """
+    Returns the most recently stored fingerprint for this repo, i.e. the
+    baseline the CURRENT run should be compared against. None if this is
+    the first run ever for this repo (nothing to compare against yet).
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT fingerprint FROM schema_snapshots
+            WHERE repo = %s
+            ORDER BY captured_at DESC
+            LIMIT 1
+            """,
+            (repo,),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def save_drift_alert(conn, repo: str, severity: str, description: str):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO drift_alerts (repo, severity, description)
+            VALUES (%s, %s, %s)
+            """,
+            (repo, severity, description),
+        )
+    conn.commit()
