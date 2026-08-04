@@ -29,8 +29,14 @@ services:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://rag_user:rag_pass@postgres/rag_pipeline
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW_API_PASSWORD: ${AIRFLOW_API_PASSWORD:-changeme123}
     entrypoint: /bin/bash
-    command: -c "airflow db init"
+    # Standalone mode creates its own random admin user for browser login,
+    # but the API container needs a STABLE, known set of credentials to
+    # call Airflow's REST API programmatically -- so we create a second,
+    # dedicated user here with a password from .env. "|| true" so this
+    # doesn't fail the container on restarts where the user already exists.
+    command: -c "airflow db init && airflow users create --username api_trigger --password \"$$AIRFLOW_API_PASSWORD\" --firstname API --lastname Trigger --role Admin --email api-trigger@rag-pipeline.local || true"
     volumes:
       - ./dags:/opt/airflow/dags
       - ./pipeline:/opt/airflow/pipeline
@@ -47,6 +53,7 @@ services:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://rag_user:rag_pass@postgres/rag_pipeline
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session
       GITHUB_REPO: langchain-ai/langchain
       GITHUB_TOKEN: ${GITHUB_TOKEN}
       GEMINI_API_KEY: ${GEMINI_API_KEY}
@@ -67,6 +74,24 @@ services:
       - ./airflow_chroma_data:/opt/airflow/chroma_data
       - ./airflow_mlflow_data:/opt/airflow/mlflow_data
     command: standalone
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: rag_api
+    depends_on:
+      - airflow-webserver
+    environment:
+      GITHUB_REPO: langchain-ai/langchain
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      PORT: "8080"
+      AIRFLOW_BASE_URL: http://airflow-webserver:8080
+      AIRFLOW_API_USERNAME: api_trigger
+      AIRFLOW_API_PASSWORD: ${AIRFLOW_API_PASSWORD:-changeme123}
+    ports:
+      - "8000:8080"
 
 volumes:
   pgdata:

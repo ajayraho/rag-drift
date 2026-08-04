@@ -1,19 +1,26 @@
 """
-The RAG agent. Built with LangChain's current (v1.0+) agent API:
-create_agent() replaces the older AgentExecutor / create_tool_calling_agent
-pattern, and is built on LangGraph under the hood -- a single function
-that wires a model, tools, and system prompt into a tool-calling loop.
+The RAG agent. Built with LangChain's current (v1.0+) agent API.
 
-Unlike a plain "always retrieve, then always answer" chain, this is a
-genuine agent: Gemini decides whether it needs to search the issue
-corpus at all, and can call the tool multiple times with different
-queries if one search isn't enough.
-
-Runnable standalone for testing: `python -m pipeline.agent "your question"`
+ask_stream() runs the agent in a background thread and yields step
+events through a queue as they happen -- this is what powers the live
+"what's the agent doing right now" trace in the UI, and it's also what
+lets us enforce our OWN hard timeout. ChatGoogleGenerativeAI's own
+timeout/max_retries params are documented but known to be unreliably
+enforced (open bugs in langchain-google-genai as of writing) -- a 503
+can trigger internal SDK retries that hang for minutes regardless of
+what we pass in. Running in a thread with a real deadline means we
+always return a clean answer or a clean error within a bounded time,
+even if the underlying SDK call is still stuck retrying in the
+background (that thread is a daemon, so it's abandoned, not killed --
+acceptable for this project's scope; a production system would need a
+real cancellable request instead).
 """
 
 import os
+import queue
 import sys
+import threading
+import time
 from functools import lru_cache
 
 from langchain.agents import create_agent
@@ -26,6 +33,7 @@ from pipeline.log_utils import extract_text, get_run_logger
 log = get_run_logger(__name__)
 
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+DEFAULT_TIMEOUT_SECONDS = int(os.environ.get("AGENT_TIMEOUT_SECONDS", "45"))
 
 SYSTEM_PROMPT = """You are a helpful assistant answering questions about \
 GitHub issues in the {repo} repository. Use the search_github_issues tool \
@@ -38,19 +46,6 @@ cite its issue number and URL."""
 
 
 def retrieve_issues(query: str, n_results: int = 5, state: str | None = None) -> list[dict]:
-    """
-    Structured retrieval, kept separate from the tool's text formatting.
-    Returning structured data (not a pre-formatted string) means this is
-    reusable outside the agent too -- e.g. the FastAPI layer can call this
-    directly to attach clickable source citations to a response, without
-    having to parse them back out of a blob of text meant for the LLM.
-
-    `state` filters via Chroma's metadata `where` clause -- a real filter,
-    not text stuffed into the semantic query (which would just pollute the
-    embedding search rather than constrain results, and was previously
-    causing the agent to retry the same search with different filter-like
-    phrasings hoping for different results).
-    """
     collection = get_chroma_collection()
     where = {"state": state} if state in ("open", "closed") else None
     results = collection.query(query_texts=[query], n_results=n_results, where=where)
@@ -107,15 +102,6 @@ def _get_api_key() -> str:
 
 @lru_cache(maxsize=1)
 def get_agent(repo: str | None = None):
-    """
-    Cached: build the LLM client + agent graph once per process, not once
-    per request. Rebuilding this on every call would recreate the Gemini
-    client for no reason -- costly once this sits behind a FastAPI endpoint
-    serving many requests.
-
-    Returns a compiled LangGraph agent (create_agent's return type).
-    Invoke it with graph.invoke({"messages": [{"role": "user", "content": ...}]}).
-    """
     repo = repo or os.environ.get("GITHUB_REPO", "langchain-ai/langchain")
     api_key = _get_api_key()
 
@@ -123,6 +109,10 @@ def get_agent(repo: str | None = None):
         model=GEMINI_MODEL,
         temperature=0,
         google_api_key=api_key,
+        # Best-effort -- see module docstring on why we don't rely on these
+        # alone to bound wait time.
+        timeout=30,
+        max_retries=1,
     )
 
     return create_agent(
@@ -132,39 +122,92 @@ def get_agent(repo: str | None = None):
     )
 
 
+def ask_stream(question: str, repo: str | None = None, timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS):
+    """
+    Generator yielding step events as the agent works, then a final
+    result or error event. Shape of yielded dicts:
+      {"type": "step", "node": "model"|"tools", "detail": "..."}
+      {"type": "final", "answer": "...", "sources": [...]}
+      {"type": "error", "detail": "..."}
+
+    Runs the actual agent work in a background thread so we can enforce
+    a real wall-clock deadline (see module docstring) -- if nothing
+    arrives within timeout_seconds, we yield an error and stop, even if
+    the underlying LLM call is still stuck retrying.
+    """
+    event_queue: queue.Queue = queue.Queue()
+    _SENTINEL = object()
+
+    def worker():
+        try:
+            graph = get_agent(repo)
+            inputs = {"messages": [{"role": "user", "content": question}]}
+            config = {"recursion_limit": 10}
+            last_node_output = None
+
+            for chunk in graph.stream(inputs, stream_mode="updates", config=config):
+                for node_name, node_output in chunk.items():
+                    for msg in node_output.get("messages", []):
+                        if node_name == "model":
+                            tool_calls = getattr(msg, "tool_calls", None)
+                            if tool_calls:
+                                for tc in tool_calls:
+                                    q = tc.get("args", {}).get("query", "")
+                                    state = tc.get("args", {}).get("state")
+                                    detail = f'Searching issues for "{q}"' + (f" (state={state})" if state else "")
+                                    event_queue.put({"type": "step", "node": "model", "detail": detail})
+                            else:
+                                event_queue.put({"type": "step", "node": "model", "detail": "Composing the final answer"})
+                        elif node_name == "tools":
+                            event_queue.put({"type": "step", "node": "tools", "detail": "Retrieved results, reasoning over them"})
+                    last_node_output = node_output
+
+            answer = extract_text(last_node_output["messages"][-1].content)
+            sources = retrieve_issues(question)
+            event_queue.put({"type": "final", "answer": answer, "sources": sources})
+        except Exception as e:
+            log.exception("Agent worker failed")
+            event_queue.put({"type": "error", "detail": str(e)})
+        finally:
+            event_queue.put(_SENTINEL)
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            yield {
+                "type": "error",
+                "detail": f"Timed out after {timeout_seconds}s -- the model provider may be "
+                          f"experiencing high demand. Please try again in a bit.",
+            }
+            return
+        try:
+            item = event_queue.get(timeout=remaining)
+        except queue.Empty:
+            yield {
+                "type": "error",
+                "detail": f"Timed out after {timeout_seconds}s -- the model provider may be "
+                          f"experiencing high demand. Please try again in a bit.",
+            }
+            return
+        if item is _SENTINEL:
+            return
+        yield item
+
+
 def ask(question: str, repo: str | None = None, verbose: bool = False) -> dict:
-    graph = get_agent(repo)
-    inputs = {"messages": [{"role": "user", "content": question}]}
-    # Hard backstop on top of the "call the tool at most twice" prompt
-    # instruction -- a model node + a tools node per round trip means
-    # ~2 tool calls is ~6 graph steps; 10 gives headroom without allowing
-    # the kind of unbounded retry loop that burned through free-tier
-    # rate limits earlier.
-    config = {"recursion_limit": 10}
-
-    all_messages = list(inputs["messages"])
-
-    if verbose:
-        # stream_mode="updates" surfaces each step of the tool-calling loop
-        # as it happens -- useful for a demo, showing the agent deciding to
-        # search and what it got back. Run ONCE: the final chunk's messages
-        # give us the answer, so there's no need for a separate invoke()
-        # call afterward (that was a bug -- it ran the whole agent twice,
-        # doubling API calls, which is exactly what blew through quota).
-        last_node_output = None
-        for chunk in graph.stream(inputs, stream_mode="updates", config=config):
-            for node_name, node_output in chunk.items():
-                print(f"--- step: {node_name} ---")
-                for msg in node_output.get("messages", []):
-                    print(msg.pretty_repr())
-                last_node_output = node_output
-        answer = extract_text(last_node_output["messages"][-1].content)
-    else:
-        result = graph.invoke(inputs, config=config)
-        answer = extract_text(result["messages"][-1].content)
-
-    sources = retrieve_issues(question)
-    return {"answer": answer, "sources": sources}
+    """Blocking wrapper for CLI/non-streaming callers -- drains ask_stream()."""
+    for event in ask_stream(question, repo):
+        if verbose and event["type"] == "step":
+            print(f"--- {event['node']}: {event['detail']}")
+        if event["type"] == "final":
+            return {"answer": event["answer"], "sources": event["sources"]}
+        if event["type"] == "error":
+            raise RuntimeError(event["detail"])
+    raise RuntimeError("Agent stream ended without a final result.")
 
 
 if __name__ == "__main__":

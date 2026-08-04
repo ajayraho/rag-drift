@@ -1,18 +1,16 @@
 """
-Airflow DAG: runs the full ingest -> embed pipeline on a schedule,
-tracked as an MLflow run.
+Airflow DAG: runs the full ingest -> embed pipeline on a schedule (or
+on-demand, triggered from the web UI for an arbitrary repo).
+
+Reads an optional `repo` key from the triggering dag_run's conf -- when
+the UI triggers this DAG for e.g. "facebook/react", it's passed through
+Jinja templating into the bash command as --repo facebook/react. Falls
+back to the GITHUB_REPO env var (and mlflow_tracking's own default) for
+the normal scheduled runs, which don't set any conf.
 
 Uses BashOperator to shell out to a separate virtualenv
 (/opt/pipeline_venv) rather than importing pipeline code directly into
-Airflow's own Python process. Airflow 2.9.3 and our pipeline's LLM stack
-(langchain, mlflow, chromadb) need incompatible dependency versions --
-importing pipeline modules directly into Airflow's process caused a real
-RecursionError in Airflow's own logging code from a transitively-
-upgraded pendulum. Full isolation avoids that entirely.
-
-Eval is intentionally NOT run here -- see rag_pipeline_eval.py, a
-separate daily DAG -- since eval costs LLM calls against a tight
-free-tier quota and shouldn't fire every hour.
+Airflow's own Python process -- see module history for why.
 """
 
 from datetime import datetime, timedelta
@@ -33,12 +31,14 @@ with DAG(
     schedule_interval="@hourly",
     start_date=datetime(2026, 1, 1),
     catchup=False,
-    max_active_runs=1,  # prevents overlapping runs from racing on the same
-                         # `since` high-water mark and double-fetching
+    max_active_runs=1,
     tags=["rag-pipeline", "ingestion"],
 ) as dag:
 
     pipeline_task = BashOperator(
         task_id="run_full_pipeline",
-        bash_command="cd /opt/airflow && /opt/pipeline_venv/bin/python -m pipeline.mlflow_tracking",
+        bash_command=(
+            "cd /opt/airflow && /opt/pipeline_venv/bin/python -m pipeline.mlflow_tracking --no-eval "
+            "{% if dag_run.conf and dag_run.conf.get('repo') %}--repo {{ dag_run.conf.get('repo') }}{% endif %}"
+        ),
     )
