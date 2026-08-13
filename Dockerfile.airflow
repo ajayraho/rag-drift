@@ -18,6 +18,7 @@ COPY requirements.txt /requirements.txt
 USER root
 RUN python -m venv /opt/pipeline_venv \
     && grep -v '^apache-airflow' /requirements.txt > /pipeline_requirements.txt \
+    && /opt/pipeline_venv/bin/pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
     && /opt/pipeline_venv/bin/pip install --no-cache-dir -r /pipeline_requirements.txt \
     && chown -R airflow: /opt/pipeline_venv
 USER airflow
