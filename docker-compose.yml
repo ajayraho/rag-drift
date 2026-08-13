@@ -57,7 +57,7 @@ services:
       GITHUB_REPO: langchain-ai/langchain
       GITHUB_TOKEN: ${GITHUB_TOKEN}
       GEMINI_API_KEY: ${GEMINI_API_KEY}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
       POSTGRES_DB: rag_pipeline
@@ -85,13 +85,23 @@ services:
     environment:
       GITHUB_REPO: langchain-ai/langchain
       GEMINI_API_KEY: ${GEMINI_API_KEY}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash}
       PORT: "8080"
       AIRFLOW_BASE_URL: http://airflow-webserver:8080
       AIRFLOW_API_USERNAME: api_trigger
       AIRFLOW_API_PASSWORD: ${AIRFLOW_API_PASSWORD:-changeme123}
     ports:
       - "8000:8080"
+    volumes:
+      # Same host folder Airflow writes to (see airflow-webserver above) --
+      # mounted OVER the image's build-time chroma_data snapshot, so
+      # anything ingested via Airflow (including from the UI's "New repo"
+      # trigger) is immediately visible here without a rebuild. Without
+      # this, the API's Chroma data would be frozen at whatever
+      # ./chroma_data looked like when the image was last built --
+      # exactly the bug that made microsoft/vscode invisible after
+      # triggering its ingestion through the UI.
+      - ./airflow_chroma_data:/app/chroma_data
 
 volumes:
   pgdata:

@@ -1,4 +1,15 @@
 .env
-pgdata/
+venv/
 __pycache__/
 *.pyc
+*.pem
+
+# Postgres, MLflow, and Chroma runtime data -- all regenerable, none of
+# it belongs in the repo (some of it is genuinely large).
+pgdata/
+airflow_chroma_data/
+airflow_mlflow_data/
+chroma_server_data/
+chroma_data/
+mlflow.db
+mlruns/

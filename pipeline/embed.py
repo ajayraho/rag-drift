@@ -26,7 +26,6 @@ EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 BATCH_SIZE = 200
 
 
-@lru_cache(maxsize=1)
 def get_chroma_collection():
     """
     Cached: without this, every call (e.g. one per agent tool invocation)

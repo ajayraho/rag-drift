@@ -192,8 +192,13 @@
       gap: 8px;
     }
 
-    .repo-bar input[type=text] {
+    .repo-input-wrap {
+      position: relative;
       flex: 1;
+    }
+
+    .repo-bar input[type=text] {
+      width: 100%;
       background: #FAFBFD;
       border: 1px solid var(--card-border);
       border-radius: 10px;
@@ -211,6 +216,46 @@
 
     .repo-bar input[type=text]::placeholder {
       color: var(--text-faint);
+    }
+
+    .repo-dropdown {
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0;
+      right: 0;
+      background: var(--card);
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+      box-shadow: var(--shadow-lg);
+      max-height: 220px;
+      overflow-y: auto;
+      z-index: 50;
+      display: none;
+    }
+
+    .repo-dropdown.visible {
+      display: block;
+    }
+
+    .repo-dropdown-item {
+      padding: 10px 14px;
+      font-family: var(--mono);
+      font-size: 13px;
+      color: var(--text);
+      cursor: pointer;
+      transition: background 0.1s ease;
+    }
+
+    .repo-dropdown-item:hover {
+      background: #F4F6FB;
+      color: var(--navy);
+    }
+
+    .repo-dropdown-empty {
+      padding: 10px 14px;
+      font-size: 12.5px;
+      color: var(--text-faint);
+      font-style: italic;
     }
 
     .repo-hint {
@@ -348,6 +393,12 @@
       border-color: var(--indigo);
       box-shadow: none;
       transform: none;
+    }
+
+    .btn.btn-lg {
+      padding: 14px 26px;
+      font-size: 14.5px;
+      margin-bottom: 18px;
     }
 
     .spinner {
@@ -719,6 +770,87 @@
       box-shadow: var(--shadow-sm);
     }
 
+    .record-card.has-quality-issue {
+      border-left: 3px solid var(--amber);
+    }
+
+    .eval-summary {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      padding: 14px 4px;
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 16px;
+    }
+
+    .eval-summary b {
+      color: var(--navy);
+      font-weight: 600;
+    }
+
+    .eval-card {
+      background: var(--card);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 16px 18px;
+      margin-bottom: 12px;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .eval-question {
+      font-size: 13.5px;
+      font-weight: 500;
+      color: var(--navy);
+      margin-bottom: 8px;
+    }
+
+    .eval-answer {
+      font-size: 12.5px;
+      color: var(--text-muted);
+      line-height: 1.6;
+      margin-bottom: 10px;
+      max-height: 90px;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+
+    .eval-scores {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+    }
+
+    .eval-score-badge {
+      font-family: var(--mono);
+      font-size: 11px;
+      padding: 3px 9px;
+      border-radius: 6px;
+    }
+
+    .eval-score-badge.good {
+      background: var(--teal-bg);
+      color: var(--teal-text);
+    }
+
+    .eval-score-badge.ok {
+      background: var(--amber-bg);
+      color: var(--amber-text);
+    }
+
+    .eval-score-badge.bad {
+      background: var(--coral-bg);
+      color: var(--coral-text);
+    }
+
+    .eval-reason {
+      font-size: 12px;
+      color: var(--text-faint);
+      font-style: italic;
+    }
+
     .record-card-head {
       display: flex;
       justify-content: space-between;
@@ -1050,7 +1182,11 @@
         Working with
       </div>
       <div class="repo-bar-row">
-        <input type="text" id="repoField" value="langchain-ai/langchain" placeholder="owner/name" />
+        <div class="repo-input-wrap">
+          <input type="text" id="repoField" autocomplete="off" value="langchain-ai/langchain"
+            placeholder="owner/name — leave empty to search all ingested repos" />
+          <div class="repo-dropdown" id="repoDropdown"></div>
+        </div>
         <button class="btn ghost" id="ingestBtn" onclick="triggerIngestion()">
           <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
             stroke-linecap="round" stroke-linejoin="round">
@@ -1087,6 +1223,14 @@
           <path d="m9 12 2 2 4-4" />
         </svg>
         Drift &amp; self-heal
+      </button>
+      <button class="tab" onclick="switchTab('eval')">
+        <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+          stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 11l3 3L22 4" />
+          <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+        </svg>
+        Evaluation
       </button>
     </div>
 
@@ -1131,7 +1275,7 @@
         proving the fix on a live record, before and after.
       </p>
 
-      <button class="btn" id="driftBtn" onclick="runDrift()">
+      <button class="btn btn-lg" id="driftBtn" onclick="runDrift()">
         <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
           stroke-linecap="round" stroke-linejoin="round">
           <path d="m12 3-1.9 4.1L6 9l4.1 1.9L12 15l1.9-4.1L18 9l-4.1-1.9L12 3Z" />
@@ -1155,9 +1299,98 @@
 
     </div>
 
+    <div class="panel" id="panel-eval">
+      <p class="intro">
+        Runs the real agent against 5 test questions, then scores each answer on
+        <b>retrieval relevance</b> (did search find the right issues), <b>faithfulness</b>
+        (did the answer stick to what was retrieved, or invent details), and
+        <b>answer relevance</b> (does it address what was asked). Always evaluates against
+        <span class="kbd">langchain-ai/langchain</span> &mdash; the test questions are written
+        for that dataset, regardless of what's in the repo field above. Takes about a minute
+        due to free-tier rate limiting.
+      </p>
+
+      <button class="btn btn-lg" id="evalBtn" onclick="runEval()">
+        <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+          stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 11l3 3L22 4" />
+          <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+        </svg>
+        <span class="spinner" id="evalSpinner"></span>
+        <span id="evalBtnLabel">Run evaluation</span>
+      </button>
+
+      <p class="error" id="evalError" style="margin-top:16px;"></p>
+
+      <div class="card" id="evalTraceCard" style="margin-bottom:16px;">
+        <div class="trace" id="evalTrace"></div>
+      </div>
+
+      <div class="eval-summary" id="evalSummary" style="display:none;"></div>
+      <div id="evalResults"></div>
+    </div>
+
   </div>
 
   <script>
+    let allRepos = [];
+
+    async function loadRepoOptions() {
+      try {
+        const res = await fetch('/repos');
+        if (!res.ok) return;
+        const data = await res.json();
+        allRepos = data.repos || [];
+      } catch (e) {
+        // Non-critical -- dropdown just stays empty, the field still works as free text.
+      }
+    }
+
+    function renderRepoDropdown(filterText) {
+      const dropdown = document.getElementById('repoDropdown');
+      const filtered = allRepos.filter(r => r.toLowerCase().includes(filterText.toLowerCase()));
+      if (filtered.length === 0) {
+        dropdown.innerHTML = allRepos.length
+          ? `<div class="repo-dropdown-empty">No matching ingested repos</div>`
+          : `<div class="repo-dropdown-empty">No repos ingested yet</div>`;
+      } else {
+        dropdown.innerHTML = filtered.map(r => `<div class="repo-dropdown-item" data-repo="${escapeHtml(r)}">${escapeHtml(r)}</div>`).join('');
+      }
+      dropdown.classList.add('visible');
+    }
+
+    function hideRepoDropdown() {
+      document.getElementById('repoDropdown').classList.remove('visible');
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      loadRepoOptions();
+
+      const repoField = document.getElementById('repoField');
+      const dropdown = document.getElementById('repoDropdown');
+
+      repoField.addEventListener('focus', () => renderRepoDropdown(repoField.value));
+      repoField.addEventListener('input', () => renderRepoDropdown(repoField.value));
+
+      // mousedown (not click) fires before the input's blur event, so a
+      // selection registers before blur would otherwise hide the dropdown first.
+      dropdown.addEventListener('mousedown', (e) => {
+        const item = e.target.closest('.repo-dropdown-item');
+        if (item && item.dataset.repo) {
+          repoField.value = item.dataset.repo;
+          hideRepoDropdown();
+        }
+      });
+
+      document.addEventListener('click', (e) => {
+        if (!e.target.closest('.repo-input-wrap')) hideRepoDropdown();
+      });
+
+      repoField.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') hideRepoDropdown();
+      });
+    });
+
     function switchTab(name) {
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
       document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
@@ -1225,7 +1458,10 @@
 
             if (event.type === 'step') {
               steps[steps.length - 1].pending = false;
-              steps.push({ cls: 'active', label: event.node === 'tools' ? 'Retrieving' : 'Reasoning', text: event.detail, pending: true });
+              let cls = 'active', label = 'Reasoning';
+              if (event.node === 'tools') label = 'Retrieving';
+              else if (event.node === 'cache') { cls = 'self_healed'; label = 'Cache hit'; }
+              steps.push({ cls, label, text: event.detail, pending: true });
               renderTrace(traceEl, steps);
             } else if (event.type === 'final') {
               steps[steps.length - 1].pending = false;
@@ -1241,7 +1477,7 @@
                   a.className = 'source-item'; a.href = s.url; a.target = '_blank'; a.rel = 'noopener';
                   a.innerHTML = `
                 <div class="source-left">
-                  <span class="source-num">#${s.number}</span>
+                  <span class="source-num">${escapeHtml(s.repo)} #${s.number}</span>
                   <span class="state-badge ${s.state}">${s.state}</span>
                   <span class="source-labels">${s.labels || 'no labels'}</span>
                 </div>
@@ -1298,13 +1534,17 @@
 
       const before = record.extraction.before;
       const after = record.extraction.after;
+      const qualityIssueLine = record.quality_issue
+        ? `<div class="record-guess review">&#9888; ${escapeHtml(record.quality_issue)} (unrelated to the schema drift above)</div>`
+        : '';
 
       return `
-    <div class="record-card">
+    <div class="record-card${record.quality_issue ? ' has-quality-issue' : ''}">
       <div class="record-card-head"><span>#${record.number}</span><span>record ${record.index + 1}/20</span></div>
       <div class="record-title">${escapeHtml(record.title)}</div>
       ${expectedLines}${actualLines}
       ${guessLines}
+      ${qualityIssueLine}
       <div class="record-extraction">
         <span class="extraction-badge ${before.success ? 'pass' : 'fail'}"><span class="dot"></span>before: ${before.success ? 'ok' : 'fails'}</span>
         <span class="extraction-badge ${after.success ? 'pass' : 'fail'}"><span class="dot"></span>after: ${after.success ? 'ok' : 'fails'}</span>
@@ -1356,12 +1596,14 @@
         const reviewCount = (data.heal_decisions || []).filter(d => d.status === 'needs_review').length;
         const driftedFields = Object.keys(data.drift_plan || {});
         const fixedRecords = (data.records || []).filter(r => r.extraction.after.success).length;
+        const qualityIssueCount = (data.records || []).filter(r => r.quality_issue).length;
 
         summary.innerHTML = `
       <span>This run drifted: <b>${driftedFields.join(', ') || 'none'}</b></span>
       <span><b>${healedCount}</b> field(s) self-healed</span>
       <span><b>${reviewCount}</b> field(s) flagged for review</span>
       <span><b>${fixedRecords}</b>/${(data.records || []).length} records recover correctly after healing</span>
+      ${qualityIssueCount > 0 ? `<span><b>${qualityIssueCount}</b> record(s) also have an unrelated data issue</span>` : ''}
     `;
         summary.style.display = 'flex';
 
@@ -1372,6 +1614,105 @@
         error.textContent = e.message; error.classList.add('visible');
       } finally {
         btn.disabled = false; btnLabel.textContent = 'Run simulation'; spinner.classList.remove('visible');
+      }
+    }
+
+    function scoreClass(score) {
+      if (score >= 4) return 'good';
+      if (score >= 3) return 'ok';
+      return 'bad';
+    }
+
+    async function runEval() {
+      const btn = document.getElementById('evalBtn');
+      const btnLabel = document.getElementById('evalBtnLabel');
+      const spinner = document.getElementById('evalSpinner');
+      const error = document.getElementById('evalError');
+      const traceCard = document.getElementById('evalTraceCard');
+      const traceEl = document.getElementById('evalTrace');
+      const summary = document.getElementById('evalSummary');
+      const resultsEl = document.getElementById('evalResults');
+
+      btn.disabled = true; btnLabel.textContent = 'Running'; spinner.classList.add('visible');
+      error.classList.remove('visible'); summary.style.display = 'none'; resultsEl.innerHTML = '';
+      traceCard.classList.add('visible');
+
+      const steps = [{ cls: 'active', label: 'Starting', text: 'Kicking off the evaluation…', pending: true }];
+      renderTrace(traceEl, steps);
+
+      try {
+        const res = await fetch('/eval/run/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        });
+        if (!res.ok || !res.body) throw new Error(`Request failed (${res.status})`);
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let finalData = null;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split('\n\n');
+          buffer = parts.pop();
+
+          for (const part of parts) {
+            const line = part.split('\n').find(l => l.startsWith('data: '));
+            if (!line) continue;
+            const event = JSON.parse(line.slice(6));
+
+            if (event.type === 'step') {
+              steps[steps.length - 1].pending = false;
+              steps.push({ cls: 'active', label: 'Progress', text: event.detail, pending: true });
+              renderTrace(traceEl, steps);
+            } else if (event.type === 'final') {
+              steps[steps.length - 1].pending = false;
+              steps.push({ cls: 'self_healed', label: 'Done', text: 'Evaluation complete.' });
+              renderTrace(traceEl, steps);
+              finalData = event;
+            } else if (event.type === 'error') {
+              steps[steps.length - 1].pending = false;
+              steps.push({ cls: 'critical', label: 'Failed', text: event.detail });
+              renderTrace(traceEl, steps);
+            }
+          }
+        }
+
+        if (finalData) {
+          summary.innerHTML = `
+        <span>Retrieval relevance: <b>${finalData.avg_retrieval_relevance}/5</b></span>
+        <span>Faithfulness: <b>${finalData.avg_faithfulness}/5</b></span>
+        <span>Answer relevance: <b>${finalData.avg_answer_relevance}/5</b></span>
+        <span><b>${finalData.num_questions}</b> questions · ${escapeHtml(finalData.repo || '')}</span>
+      `;
+          summary.style.display = 'flex';
+
+          resultsEl.innerHTML = (finalData.results || []).map(r => {
+            const answerPreview = (r.answer || '').slice(0, 320) + ((r.answer || '').length > 320 ? '…' : '');
+            return `
+          <div class="eval-card">
+            <div class="eval-question">${escapeHtml(r.question)}</div>
+            <div class="eval-answer">${escapeHtml(answerPreview)}</div>
+            <div class="eval-scores">
+              <span class="eval-score-badge ${scoreClass(r.retrieval_relevance)}">retrieval ${r.retrieval_relevance}/5</span>
+              <span class="eval-score-badge ${scoreClass(r.faithfulness)}">faithfulness ${r.faithfulness}/5</span>
+              <span class="eval-score-badge ${scoreClass(r.answer_relevance)}">relevance ${r.answer_relevance}/5</span>
+            </div>
+            <div class="eval-reason">${escapeHtml(r.reason || '')}</div>
+          </div>
+        `;
+          }).join('');
+        }
+      } catch (e) {
+        steps[steps.length - 1].pending = false;
+        steps.push({ cls: 'critical', label: 'Failed', text: e.message });
+        renderTrace(traceEl, steps);
+      } finally {
+        btn.disabled = false; btnLabel.textContent = 'Run evaluation'; spinner.classList.remove('visible');
       }
     }
 

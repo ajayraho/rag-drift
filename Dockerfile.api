@@ -12,10 +12,9 @@ RUN grep -v '^apache-airflow' /requirements.txt > /api_requirements.txt
 
 # sentence-transformers depends on torch, and pip defaults to the full
 # CUDA/GPU build -- hundreds of MB to several GB of NVIDIA libraries we
-# never use (CPU-only embeddings here, no GPU on Cloud Run/Koyeb free
-# tiers either). Installing the CPU-only wheel first means the later
-# install of everything else finds torch already satisfied and skips
-# the GPU build entirely.
+# never use (CPU-only embeddings, no GPU on this deployment). Installing
+# the CPU-only wheel first means the later install of everything else
+# finds torch already satisfied and skips the GPU build entirely.
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir -r /api_requirements.txt
 
@@ -29,20 +28,16 @@ COPY pipeline/ /app/pipeline/
 COPY api/ /app/api/
 COPY static/ /app/static/
 
-# Baked-in snapshot of the vector store, built at image-build time from
-# whatever's in ./chroma_data on the host. Cloud Run/Koyeb containers
-# don't have a writable persistent disk between deploys, so for this
-# project's scope we ship a point-in-time snapshot rather than wiring up
-# a managed/persistent vector store -- the deployed agent's knowledge is
-# as fresh as the last image build, not live-updating between ingestion
-# runs. Worth stating plainly, not hiding.
-COPY chroma_data/ /app/chroma_data/
+# NOTE: no chroma_data COPY here anymore. The API connects to a real
+# Chroma SERVER over the network (CHROMA_HOST/CHROMA_PORT, set via
+# docker-compose environment) instead of reading local files -- a
+# baked-in snapshot was a real bug we hit (stale data invisible to
+# Airflow's writes, then a concurrent-file-access corruption bug once we
+# tried sharing the files). This image ships with zero embedded data by
+# design; it always talks to whatever Chroma server it's pointed at.
 
-ENV CHROMA_PERSIST_DIR=/app/chroma_data
 ENV PYTHONPATH=/app
 
 EXPOSE 8080
 
-# Cloud Run/Koyeb inject $PORT and expect the container to listen on it;
-# defaulting to 8080 for local/other environments.
 CMD exec uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8080}

@@ -14,6 +14,24 @@ even if the underlying SDK call is still stuck retrying in the
 background (that thread is a daemon, so it's abandoned, not killed --
 acceptable for this project's scope; a production system would need a
 real cancellable request instead).
+
+Also implements a simple in-memory response cache: an exact repeat of
+the same question (+ repo) within CACHE_TTL_SECONDS skips retrieval and
+generation entirely, returning the cached answer immediately -- a real,
+if modest, token/cost optimization, not just rate-limit pacing. It's
+process-local and exact-match (no semantic similarity matching, no
+cross-instance sharing) -- explicitly scoped that way for this
+project; a production deployment would want a shared cache (Redis) and
+ideally semantic matching, plus invalidation on re-ingestion rather
+than pure TTL expiry.
+
+IMPORTANT: get_agent(repo) is cached per-repo, and each agent gets its
+OWN search tool bound to that repo via a closure in _build_search_tool.
+This is deliberate: the LLM is never trusted to correctly pass a `repo`
+argument on every tool call -- if it forgot even once, or the UI's repo
+field didn't match exactly, retrieval would silently search across every
+ingested repo's issues at once. Binding repo at agent-build time closes
+that off entirely; the tool physically cannot search outside its repo.
 """
 
 import os
@@ -32,22 +50,79 @@ from pipeline.log_utils import extract_text, get_run_logger
 
 log = get_run_logger(__name__)
 
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
 DEFAULT_TIMEOUT_SECONDS = int(os.environ.get("AGENT_TIMEOUT_SECONDS", "45"))
 
-SYSTEM_PROMPT = """You are a helpful assistant answering questions about \
+SYSTEM_PROMPT_SINGLE_REPO = """You are a helpful assistant answering questions about \
 GitHub issues in the {repo} repository. Use the search_github_issues tool \
 to find relevant issues before answering. Call the tool AT MOST TWICE total \
 -- if a search (including a state-filtered one) doesn't turn up what you \
 need, answer honestly with what you found rather than retrying with \
 different phrasings. If the search doesn't turn up anything relevant, say \
 so honestly instead of making something up. When you reference an issue, \
-cite its issue number and URL."""
+cite its issue number, its repo, and its URL."""
+
+SYSTEM_PROMPT_ALL_REPOS = """You are a helpful assistant answering questions \
+about GitHub issues across every repository that's been ingested into this \
+system. Use the search_github_issues tool to find relevant issues before \
+answering -- results may come from different repos, so always state which \
+repo each issue belongs to when you reference it. Call the tool AT MOST \
+TWICE total -- if a search doesn't turn up what you need, answer honestly \
+with what you found rather than retrying with different phrasings. If the \
+search doesn't turn up anything relevant, say so honestly instead of making \
+something up."""
 
 
-def retrieve_issues(query: str, n_results: int = 5, state: str | None = None) -> list[dict]:
+# --- Response cache --------------------------------------------------------
+# Small, real, in-process. See module docstring for the honest scoping notes.
+CACHE_TTL_SECONDS = int(os.environ.get("CACHE_TTL_SECONDS", "1800"))
+_response_cache: dict[tuple, tuple[dict, float]] = {}
+
+
+def _cache_key(question: str, repo: str | None) -> tuple:
+    normalized_question = " ".join(question.strip().lower().split())
+    return (normalized_question, repo or "__all_repos__")
+
+
+def _get_cached(key: tuple) -> dict | None:
+    entry = _response_cache.get(key)
+    if entry is None:
+        return None
+    result, cached_at = entry
+    if time.monotonic() - cached_at > CACHE_TTL_SECONDS:
+        del _response_cache[key]
+        return None
+    return result
+
+
+def _store_cache(key: tuple, result: dict) -> None:
+    _response_cache[key] = (result, time.monotonic())
+
+
+def _build_where(state: str | None, repo: str | None) -> dict | None:
+    conditions = []
+    if state in ("open", "closed"):
+        conditions.append({"state": state})
+    if repo:
+        conditions.append({"repo": repo})
+    if not conditions:
+        return None
+    if len(conditions) == 1:
+        return conditions[0]
+    return {"$and": conditions}
+
+
+def retrieve_issues(query: str, n_results: int = 5, state: str | None = None, repo: str | None = None) -> list[dict]:
+    """
+    repo filters via Chroma's `where` clause -- without this, search runs
+    across EVERY repo ever ingested into the same collection, mixed
+    together. That was a real bug here: questions about one repo were
+    getting answered (and cited!) using another repo's issues entirely,
+    because nothing constrained retrieval to the repo the user was
+    actually asking about.
+    """
     collection = get_chroma_collection()
-    where = {"state": state} if state in ("open", "closed") else None
+    where = _build_where(state, repo)
     results = collection.query(query_texts=[query], n_results=n_results, where=where)
 
     if not results["ids"] or not results["ids"][0]:
@@ -57,6 +132,7 @@ def retrieve_issues(query: str, n_results: int = 5, state: str | None = None) ->
     for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
         issues.append({
             "number": meta["number"],
+            "repo": meta["repo"],
             "state": meta["state"],
             "labels": meta["labels"],
             "url": meta["url"],
@@ -76,18 +152,28 @@ def _format_issues_for_llm(issues: list[dict]) -> str:
     )
 
 
-@tool
-def search_github_issues(query: str, state: str | None = None) -> str:
-    """Search the GitHub issues corpus for issues relevant to the query.
-    Returns the top matching issues with their title, state, labels, and URL.
-
-    Args:
-        query: the semantic search text (topic/keywords), WITHOUT filter
-            syntax like "state:open" -- use the separate `state` arg for that.
-        state: optional filter, either "open" or "closed". Leave unset to
-            search across both states.
+def _build_search_tool(repo: str):
     """
-    return _format_issues_for_llm(retrieve_issues(query, state=state))
+    Returns a search_github_issues tool BOUND to one specific repo via
+    closure. The LLM still supplies query/state, but repo is fixed at
+    creation time -- not an LLM-controllable argument -- so there's no
+    path by which a tool call can accidentally search a different repo.
+    """
+
+    @tool
+    def search_github_issues(query: str, state: str | None = None) -> str:
+        """Search the GitHub issues corpus for issues relevant to the query.
+        Returns the top matching issues with their title, state, labels, and URL.
+
+        Args:
+            query: the semantic search text (topic/keywords), WITHOUT filter
+                syntax like "state:open" -- use the separate `state` arg for that.
+            state: optional filter, either "open" or "closed". Leave unset to
+                search across both states.
+        """
+        return _format_issues_for_llm(retrieve_issues(query, state=state, repo=repo))
+
+    return search_github_issues
 
 
 def _get_api_key() -> str:
@@ -100,9 +186,8 @@ def _get_api_key() -> str:
     return key
 
 
-@lru_cache(maxsize=1)
+@lru_cache(maxsize=8)
 def get_agent(repo: str | None = None):
-    repo = repo or os.environ.get("GITHUB_REPO", "langchain-ai/langchain")
     api_key = _get_api_key()
 
     llm = ChatGoogleGenerativeAI(
@@ -115,10 +200,12 @@ def get_agent(repo: str | None = None):
         max_retries=1,
     )
 
+    system_prompt = SYSTEM_PROMPT_SINGLE_REPO.format(repo=repo) if repo else SYSTEM_PROMPT_ALL_REPOS
+
     return create_agent(
         model=llm,
-        tools=[search_github_issues],
-        system_prompt=SYSTEM_PROMPT.format(repo=repo),
+        tools=[_build_search_tool(repo)],
+        system_prompt=system_prompt,
     )
 
 
@@ -126,15 +213,28 @@ def ask_stream(question: str, repo: str | None = None, timeout_seconds: int = DE
     """
     Generator yielding step events as the agent works, then a final
     result or error event. Shape of yielded dicts:
-      {"type": "step", "node": "model"|"tools", "detail": "..."}
-      {"type": "final", "answer": "...", "sources": [...]}
+      {"type": "step", "node": "model"|"tools"|"cache", "detail": "..."}
+      {"type": "final", "answer": "...", "sources": [...], "cached": bool}
       {"type": "error", "detail": "..."}
 
-    Runs the actual agent work in a background thread so we can enforce
-    a real wall-clock deadline (see module docstring) -- if nothing
-    arrives within timeout_seconds, we yield an error and stop, even if
-    the underlying LLM call is still stuck retrying.
+    repo=None means search across every ingested repo -- this is a
+    deliberate mode (the UI's repo field, left empty, triggers it), not
+    a missing value we should silently paper over with a default.
+
+    Checks the response cache FIRST, before spawning any work -- an exact
+    repeat of the same question skips retrieval and generation entirely,
+    not just avoiding a slow response but avoiding the LLM call altogether.
     """
+    cache_key = _cache_key(question, repo)
+    cached = _get_cached(cache_key)
+    if cached is not None:
+        yield {
+            "type": "step", "node": "cache",
+            "detail": "Exact match found in the response cache -- skipping retrieval and generation entirely.",
+        }
+        yield {"type": "final", "answer": cached["answer"], "sources": cached["sources"], "cached": True}
+        return
+
     event_queue: queue.Queue = queue.Queue()
     _SENTINEL = object()
 
@@ -163,8 +263,10 @@ def ask_stream(question: str, repo: str | None = None, timeout_seconds: int = DE
                     last_node_output = node_output
 
             answer = extract_text(last_node_output["messages"][-1].content)
-            sources = retrieve_issues(question)
-            event_queue.put({"type": "final", "answer": answer, "sources": sources})
+            sources = retrieve_issues(question, repo=repo)
+
+            _store_cache(cache_key, {"answer": answer, "sources": sources})
+            event_queue.put({"type": "final", "answer": answer, "sources": sources, "cached": False})
         except Exception as e:
             log.exception("Agent worker failed")
             event_queue.put({"type": "error", "detail": str(e)})
@@ -212,6 +314,7 @@ def ask(question: str, repo: str | None = None, verbose: bool = False) -> dict:
 
 if __name__ == "__main__":
     q = " ".join(sys.argv[1:]) or "What are some open issues related to embeddings?"
-    result = ask(q, verbose=True)
+    default_repo = os.environ.get("GITHUB_REPO", "langchain-ai/langchain")
+    result = ask(q, repo=default_repo, verbose=True)
     print("\n--- ANSWER ---")
     print(result["answer"])

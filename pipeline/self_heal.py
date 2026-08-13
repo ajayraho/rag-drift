@@ -220,6 +220,39 @@ def _apply_drift(payload: dict, plan: dict) -> dict:
     return drifted
 
 
+# Unrelated to the batch-level schema drift above -- real data also has
+# scattered, per-record quality problems independent of any schema change.
+# Sprinkling a few of these in is what makes results NOT always a clean
+# 0/20 or 20/20: the schema-drift fix is uniform across the batch (same
+# field renamed the same way everywhere), but a record with its own,
+# unrelated bad value stays broken regardless of whether that fix applied.
+PER_RECORD_QUALITY_ISSUES = [
+    ("title", ""),          # blank title -- fails the required min_length validator
+    ("state", "archived"),  # invalid state value -- fails the state_must_be_known validator
+]
+
+
+def _apply_random_quality_issues(payloads: list[dict]) -> tuple[list[dict], dict[int, str]]:
+    affected: dict[int, str] = {}
+    num_issues = random.choice([0, 0, 1, 1, 2, 3])
+    if num_issues == 0:
+        return payloads, affected
+
+    indices = random.sample(range(len(payloads)), k=min(num_issues, len(payloads)))
+    for idx in indices:
+        # Only pick an issue for a field that's actually still present in
+        # this record -- if the batch drift already renamed/removed it,
+        # setting it here would wrongly re-add a field that shouldn't exist.
+        applicable = [(f, v) for f, v in PER_RECORD_QUALITY_ISSUES if f in payloads[idx]]
+        if not applicable:
+            continue
+        field, bad_value = random.choice(applicable)
+        payloads[idx] = dict(payloads[idx])
+        payloads[idx][field] = bad_value
+        affected[idx] = f"unrelated issue: '{field}' is {bad_value!r} in this specific record"
+    return payloads, affected
+
+
 def run_synthetic_demo() -> dict:
     from pydantic import ValidationError
 
@@ -229,6 +262,7 @@ def run_synthetic_demo() -> dict:
     baseline_payloads = _build_sample_payloads(20)
     drift_plan = _pick_drift_plan()
     drifted_payloads = [_apply_drift(p, drift_plan) for p in baseline_payloads]
+    drifted_payloads, quality_issues = _apply_random_quality_issues(drifted_payloads)
 
     baseline_fp = compute_fingerprint(baseline_payloads)
     drifted_fp = compute_fingerprint(drifted_payloads)
@@ -266,6 +300,7 @@ def run_synthetic_demo() -> dict:
                 "before": try_extract(actual, {}),
                 "after": try_extract(actual, healed_overrides),
             },
+            "quality_issue": quality_issues.get(i),
         })
 
     return {
