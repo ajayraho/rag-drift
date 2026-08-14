@@ -87,7 +87,7 @@ Every stage is tracked in MLflow (ingestion counts, drift alerts, retrieval/fait
 ## Running it locally
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/rag-drift-pipeline.git
+git clone https://github.com/ajayraho/rag-drift-pipeline.git
 cd rag-drift-pipeline
 cp .env.example .env   # fill in GEMINI_API_KEY, GITHUB_TOKEN, AIRFLOW_API_PASSWORD
 docker compose up -d --build
