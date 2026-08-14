@@ -20,7 +20,8 @@ from chromadb.utils import embedding_functions
 from pipeline.db import get_connection, get_unembedded_issues, mark_embedded
 from pipeline.log_utils import get_run_logger
 
-CHROMA_PERSIST_DIR = os.environ.get("CHROMA_PERSIST_DIR", "./chroma_data")
+CHROMA_HOST = os.environ.get("CHROMA_HOST", "localhost")
+CHROMA_PORT = int(os.environ.get("CHROMA_PORT", "8001"))
 COLLECTION_NAME = "github_issues"
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 BATCH_SIZE = 200
@@ -33,7 +34,7 @@ def get_chroma_collection():
     model from disk -- unnecessary overhead when the same process is going
     to call this repeatedly (e.g. an agent answering many questions).
     """
-    client = chromadb.PersistentClient(path=CHROMA_PERSIST_DIR)
+    client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
     embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
         model_name=EMBEDDING_MODEL
     )

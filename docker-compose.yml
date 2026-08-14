@@ -17,6 +17,26 @@ services:
       timeout: 5s
       retries: 5
 
+  # A real Chroma SERVER instead of two separate processes (Airflow, API)
+  # each opening their own file-based client against the same shared
+  # directory -- that pattern is explicitly not safe for concurrent
+  # multi-process access and caused two distinct internal Chroma errors
+  # in practice ("Error finding id" locally, "Nothing found on disk" on
+  # this deployment). A server handles concurrent access correctly, by
+  # design. Reuses the EXISTING airflow_chroma_data directory as its data
+  # volume -- Chroma's server mode uses the same on-disk file format as
+  # the file-based client, so already-embedded data should be picked up
+  # as-is, no re-ingestion needed.
+  chromadb:
+    image: chromadb/chroma:1.5.9
+    container_name: rag_chromadb
+    volumes:
+      - ./airflow_chroma_data:/data
+    ports:
+      - "8001:8000"
+    healthcheck:
+      disable: true
+
   airflow-init:
     build:
       context: .
@@ -31,11 +51,6 @@ services:
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW_API_PASSWORD: ${AIRFLOW_API_PASSWORD:-changeme123}
     entrypoint: /bin/bash
-    # Standalone mode creates its own random admin user for browser login,
-    # but the API container needs a STABLE, known set of credentials to
-    # call Airflow's REST API programmatically -- so we create a second,
-    # dedicated user here with a password from .env. "|| true" so this
-    # doesn't fail the container on restarts where the user already exists.
     command: -c "airflow db init && airflow users create --username api_trigger --password \"$$AIRFLOW_API_PASSWORD\" --firstname API --lastname Trigger --role Admin --email api-trigger@rag-pipeline.local || true"
     volumes:
       - ./dags:/opt/airflow/dags
@@ -48,7 +63,10 @@ services:
     image: rag-pipeline-airflow:latest
     container_name: rag_airflow
     depends_on:
-      - airflow-init
+      airflow-init:
+        condition: service_completed_successfully
+      chromadb:
+        condition: service_started
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://rag_user:rag_pass@postgres/rag_pipeline
@@ -64,44 +82,40 @@ services:
       POSTGRES_USER: rag_user
       POSTGRES_PASSWORD: rag_pass
       PYTHONPATH: /opt/airflow
-      CHROMA_PERSIST_DIR: /opt/airflow/chroma_data
+      CHROMA_HOST: chromadb
+      CHROMA_PORT: "8000"
       MLFLOW_TRACKING_URI: sqlite:////opt/airflow/mlflow_data/mlflow.db
     ports:
       - "8080:8080"
     volumes:
       - ./dags:/opt/airflow/dags
       - ./pipeline:/opt/airflow/pipeline
-      - ./airflow_chroma_data:/opt/airflow/chroma_data
       - ./airflow_mlflow_data:/opt/airflow/mlflow_data
     command: standalone
+    restart: unless-stopped
 
   api:
     build:
       context: .
       dockerfile: Dockerfile.api
+    image: rag-drift-api
     container_name: rag_api
     depends_on:
-      - airflow-webserver
+      chromadb:
+        condition: service_started
     environment:
       GITHUB_REPO: langchain-ai/langchain
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash}
       PORT: "8080"
+      CHROMA_HOST: chromadb
+      CHROMA_PORT: "8000"
       AIRFLOW_BASE_URL: http://airflow-webserver:8080
       AIRFLOW_API_USERNAME: api_trigger
       AIRFLOW_API_PASSWORD: ${AIRFLOW_API_PASSWORD:-changeme123}
     ports:
       - "8000:8080"
-    volumes:
-      # Same host folder Airflow writes to (see airflow-webserver above) --
-      # mounted OVER the image's build-time chroma_data snapshot, so
-      # anything ingested via Airflow (including from the UI's "New repo"
-      # trigger) is immediately visible here without a rebuild. Without
-      # this, the API's Chroma data would be frozen at whatever
-      # ./chroma_data looked like when the image was last built --
-      # exactly the bug that made microsoft/vscode invisible after
-      # triggering its ingestion through the UI.
-      - ./airflow_chroma_data:/app/chroma_data
+    restart: unless-stopped
 
 volumes:
   pgdata:
