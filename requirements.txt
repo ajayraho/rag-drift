@@ -12,7 +12,9 @@ uvicorn[standard]==0.30.6
 
 mlflow==2.16.2
 
-# Schema migrations. Versions chosen inside mlflow 2.16.2's own ranges
-# (alembic<2, sqlalchemy>=1.4,<3) so there is no resolver conflict.
+# Schema migrations. alembic inside mlflow 2.16.2's own range (<2).
+# SQLAlchemy capped at <2.1: mlflow 2.16.2 declares sqlalchemy<3 but
+# imports FallbackAsyncAdaptedQueuePool, which 2.1 removed -- any fresh
+# image build would otherwise pull 2.1 and break MLflow's sqlite store.
 alembic>=1.13,<2
-SQLAlchemy>=2.0,<3
+SQLAlchemy>=2.0,<2.1
