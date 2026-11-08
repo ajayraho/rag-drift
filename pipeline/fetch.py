@@ -164,6 +164,19 @@ def run_ingestion(repo: str | None = None, token: str | None = None, max_pages: 
                     insert_quarantine(conn, repo=repo, raw_payload=raw, error_reason=str(e))
                     log.warning("Quarantined issue id=%s: %s", raw.get("id"), e)
                     continue
+                except Exception as e:
+                    # Anything else raised while turning ONE payload into a
+                    # GitHubIssue is still a problem with that record, not
+                    # with the pipeline -- quarantine it (with the exception
+                    # type, so it stands out) and keep going instead of
+                    # failing the whole run. Deliberately scoped to parsing
+                    # only: DB errors from upsert_issue below must still fail
+                    # loudly, because quarantining those would hide an outage.
+                    quarantined_count += 1
+                    reason = f"unexpected {type(e).__name__} during extraction: {e}"
+                    insert_quarantine(conn, repo=repo, raw_payload=raw, error_reason=reason)
+                    log.exception("Quarantined issue id=%s after unexpected error", raw.get("id"))
+                    continue
 
                 upsert_issue(conn, issue)
                 valid_count += 1

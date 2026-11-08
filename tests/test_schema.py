@@ -141,3 +141,34 @@ class TestFieldOverrides:
             GitHubIssue.from_github_payload(
                 raw, repo="acme/widgets", field_overrides={"state": "status"}
             )
+
+# --- Shape surprises must become ValueError (-> quarantine), not crash ---
+
+def _base_payload(**overrides):
+    payload = {
+        "id": 1, "number": 1, "title": "t", "body": "b", "state": "open",
+        "labels": [], "user": {"login": "u"},
+        "created_at": "2024-01-01T00:00:00Z", "updated_at": "2024-01-01T00:00:00Z",
+        "comments": 0,
+    }
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.parametrize("bad", [
+    {"user": "just-a-string"},          # e.g. an override mapped user -> a string field
+    {"user": ["a", "list"]},
+    {"labels": 42},                     # not iterable
+    {"labels": [["nested", "list"]]},   # pydantic would reject, but must not crash
+])
+def test_shape_surprises_raise_value_error(bad):
+    with pytest.raises((ValueError, ValidationError)):
+        GitHubIssue.from_github_payload(_base_payload(**bad), repo="o/r")
+
+
+def test_override_onto_string_user_field_is_a_value_error():
+    payload = _base_payload()
+    del payload["user"]
+    payload["creator"] = "someone"
+    with pytest.raises(ValueError, match="'user' should be an object"):
+        GitHubIssue.from_github_payload(payload, repo="o/r", field_overrides={"user": "creator"})

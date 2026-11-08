@@ -96,15 +96,27 @@ class GitHubIssue(BaseModel):
                 return raw[override_key]
             return default
 
-        raw_labels = get("labels")
-        if isinstance(raw_labels, str):
-            # Handles a healed mapping onto a field that stores labels as a
-            # delimited string rather than a list -- e.g. "bug,enhancement".
-            labels = [x.strip() for x in raw_labels.split(",") if x.strip()]
-        elif raw_labels:
-            labels = [l["name"] if isinstance(l, dict) else l for l in raw_labels]
-        else:
-            labels = []
+        try:
+            raw_labels = get("labels")
+            if isinstance(raw_labels, str):
+                # Handles a healed mapping onto a field that stores labels as a
+                # delimited string rather than a list -- e.g. "bug,enhancement".
+                labels = [x.strip() for x in raw_labels.split(",") if x.strip()]
+            elif raw_labels:
+                labels = [l["name"] if isinstance(l, dict) else l for l in raw_labels]
+            else:
+                labels = []
+
+            user = get("user")
+            if user is not None and not isinstance(user, dict):
+                raise ValueError(f"'user' should be an object, got {type(user).__name__}")
+            author = (user or {}).get("login")
+        except (TypeError, AttributeError) as e:
+            # Shape surprises while EXTRACTING (labels is an int, a label is
+            # a list, ...) used to escape as TypeError/AttributeError, which
+            # the caller didn't catch -- one odd record crashed the whole run.
+            # They're data problems, so surface them as ValueError -> quarantine.
+            raise ValueError(f"unexpected payload shape: {type(e).__name__}: {e}") from e
 
         return cls(
             id=get("id"),
@@ -116,6 +128,6 @@ class GitHubIssue(BaseModel):
             labels=labels,
             created_at=get("created_at"),
             updated_at=get("updated_at"),
-            author=(get("user") or {}).get("login"),
+            author=author,
             comments_count=get("comments", 0),
         )

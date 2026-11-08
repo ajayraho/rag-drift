@@ -138,3 +138,42 @@ def test_pull_requests_are_never_quarantined(cleanup_test_repo, monkeypatch):
 
     assert result["skipped"] == 1
     assert result["quarantined"] == 0
+
+def test_unexpected_extraction_error_quarantines_instead_of_crashing(cleanup_test_repo, monkeypatch):
+    """
+    An exception type the parser doesn't anticipate (here a RuntimeError
+    injected for one record) used to escape run_ingestion and fail the
+    whole Airflow task. It must quarantine that record and carry on.
+    """
+    from pipeline import fetch
+    from pipeline.schema import GitHubIssue
+
+    real_parse = GitHubIssue.from_github_payload
+
+    def flaky_parse(raw, repo, field_overrides=None):
+        if raw["id"] == 900002:
+            raise RuntimeError("something nobody planned for")
+        return real_parse(raw, repo=repo, field_overrides=field_overrides)
+
+    def two_issues(session, repo, page, since, log):
+        if page > 1:
+            return []
+        base = {
+            "number": 1, "title": "ok", "body": "", "state": "open", "labels": [],
+            "user": {"login": "t"}, "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z", "comments": 0,
+        }
+        return [{**base, "id": 900001}, {**base, "id": 900002, "number": 2}]
+
+    monkeypatch.setattr(fetch, "fetch_issues_page", two_issues)
+    monkeypatch.setattr(fetch.GitHubIssue, "from_github_payload", staticmethod(flaky_parse))
+
+    result = fetch.run_ingestion(repo=TEST_REPO, token=None, max_pages=2)
+
+    assert result["valid"] == 1
+    assert result["quarantined"] == 1
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT error_reason FROM quarantine WHERE repo = %s", (TEST_REPO,))
+            (reason,) = cur.fetchone()
+    assert reason.startswith("unexpected RuntimeError")
