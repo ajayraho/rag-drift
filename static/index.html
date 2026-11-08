@@ -1302,13 +1302,13 @@
 
     <div class="panel" id="panel-eval">
       <p class="intro">
-        Runs the real agent against 5 test questions, then scores each answer on
-        <b>retrieval relevance</b> (did search find the right issues), <b>faithfulness</b>
-        (did the answer stick to what was retrieved, or invent details), and
-        <b>answer relevance</b> (does it address what was asked). Always evaluates against
-        <span class="kbd">langchain-ai/langchain</span> &mdash; the test questions are written
-        for that dataset, regardless of what's in the repo field above. Takes about a minute
-        due to free-tier rate limiting.
+        Runs the real agent on 5 questions from the repo's <b>golden question set</b>
+        (questions where we know which issue is the right answer) and checks three things:
+        <b>found expected issue</b> (did the agent's sources include it &mdash; no judge needed),
+        <b>faithfulness</b> (did the answer stick to its sources, or invent details), and
+        <b>answer relevance</b> (does it address what was asked). Uses the repo in the field
+        above; that repo needs a golden set first. Takes about a minute due to free-tier
+        rate limiting. Results are logged to MLflow.
       </p>
 
       <button class="btn btn-lg" id="evalBtn" onclick="runEval()">
@@ -1645,7 +1645,7 @@
         const res = await fetch('/eval/run/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({}),
+          body: JSON.stringify({ repo: document.getElementById('repoField').value.trim() || null }),
         });
         if (!res.ok || !res.body) throw new Error(`Request failed (${res.status})`);
 
@@ -1685,10 +1685,11 @@
 
         if (finalData) {
           summary.innerHTML = `
-        <span>Retrieval relevance: <b>${finalData.avg_retrieval_relevance}/5</b></span>
+        <span>Found expected issue: <b>${Math.round(finalData.found_expected_rate * 100)}%</b></span>
         <span>Faithfulness: <b>${finalData.avg_faithfulness}/5</b></span>
         <span>Answer relevance: <b>${finalData.avg_answer_relevance}/5</b></span>
-        <span><b>${finalData.num_questions}</b> questions · ${escapeHtml(finalData.repo || '')}</span>
+        <span><b>${finalData.num_scored}</b>/${finalData.num_questions} scored · ${escapeHtml(finalData.repo || '')}</span>
+        ${finalData.judge_failures || finalData.agent_errors ? `<span>${finalData.judge_failures} judge failure(s), ${finalData.agent_errors} agent error(s) &mdash; not counted</span>` : ''}
       `;
           summary.style.display = 'flex';
 
@@ -1699,9 +1700,11 @@
             <div class="eval-question">${escapeHtml(r.question)}</div>
             <div class="eval-answer">${escapeHtml(answerPreview)}</div>
             <div class="eval-scores">
-              <span class="eval-score-badge ${scoreClass(r.retrieval_relevance)}">retrieval ${r.retrieval_relevance}/5</span>
+              <span class="eval-score-badge ${r.found_expected ? 'good' : 'bad'}">${r.found_expected ? 'found expected issue' : 'missed expected issue'}</span>
+              ${r.status === 'scored' ? `
               <span class="eval-score-badge ${scoreClass(r.faithfulness)}">faithfulness ${r.faithfulness}/5</span>
-              <span class="eval-score-badge ${scoreClass(r.answer_relevance)}">relevance ${r.answer_relevance}/5</span>
+              <span class="eval-score-badge ${scoreClass(r.answer_relevance)}">relevance ${r.answer_relevance}/5</span>` : `
+              <span class="eval-score-badge ok">not scored</span>`}
             </div>
             <div class="eval-reason">${escapeHtml(r.reason || '')}</div>
           </div>

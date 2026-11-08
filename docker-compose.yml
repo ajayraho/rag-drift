@@ -125,6 +125,11 @@ services:
       AIRFLOW_BASE_URL: http://airflow-webserver:8080
       AIRFLOW_API_USERNAME: api_trigger
       AIRFLOW_API_PASSWORD: ${AIRFLOW_API_PASSWORD:-changeme123}
+      # Same MLflow store as Airflow, so UI-triggered answer evals show up
+      # next to the scheduled ingestion/eval runs.
+      MLFLOW_TRACKING_URI: sqlite:////opt/mlflow_data/mlflow.db
+    volumes:
+      - ./airflow_mlflow_data:/opt/mlflow_data
     ports:
       - "8000:8080"
     restart: unless-stopped

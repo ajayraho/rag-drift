@@ -1,67 +1,126 @@
 """
-Retrieval-quality eval: a small fixed set of test questions, scored by
-an LLM-as-judge on whether the retrieved issues are actually relevant.
+Evaluation, in two parts -- both run against the repo's golden question
+set (see golden_set.py), so scores are comparable run over run:
 
-This is intentionally NOT an end-to-end answer-quality eval (that would
-need hand-labeled ground-truth answers, which we don't have for a live
-GitHub repo). Scoring retrieval relevance is the right-sized eval for
-what this project needs to detect: "did the pipeline hand the agent
-good context to work with" -- which is exactly what degrades silently
-when a source's structure or content drifts.
+1. Retrieval eval (run_retrieval_eval) -- cheap, objective, NO LLM.
+   For each golden question, search the index and check where the
+   expected issue landed: Hit@5 and MRR (see metrics.py). Runs daily
+   and after any retrieval change. This replaced an LLM judge rating
+   "how relevant do these results look" on 10 hard-coded LangChain
+   questions, which was subjective, cost quota, and meaningless for
+   any other repo.
 
-Runnable standalone: `python -m pipeline.eval`
+2. Answer eval (run_full_eval_stream) -- runs the real agent on a few
+   golden questions and has an LLM judge score the ANSWER on:
+     faithfulness     -- uses only what's in the sources it cited
+     answer_relevance -- actually addresses the question
+   Plus "found_expected": did the agent's own sources include the
+   expected issue (objective, no judge). Manually triggered from the UI
+   because each question costs ~3 LLM calls on a free-tier quota.
+
+Judge failures (unparseable JSON) and agent errors are COUNTED and
+excluded from averages. They used to be scored 0, which silently
+dragged averages down and looked like a quality regression.
+
+Runnable standalone: `python -m pipeline.eval --repo owner/name`
 """
 
 import json
 import os
+import sys
 import time
 
-from langchain_google_genai import ChatGoogleGenerativeAI
-
-from pipeline.agent import GEMINI_MODEL, _get_api_key, retrieve_issues
+from pipeline.golden_set import golden_set_version, load_golden_set
 from pipeline.log_utils import extract_text, get_run_logger
+from pipeline.metrics import first_hit_rank, hit_at_k, mean, reciprocal_rank
 
 log = get_run_logger(__name__)
 
-# Free-tier Gemini quota is tight. Ten test questions = ten judge calls in
-# a loop -- without pacing, that can blow through the quota partway
-# through. Configurable via env var since a paid tier would allow a much
-# higher rate.
+# Free-tier Gemini quota is tight -- pace LLM calls. Configurable since a
+# paid tier would allow a much higher rate.
 GEMINI_RPM_LIMIT = int(os.environ.get("GEMINI_RPM_LIMIT", "5"))
 _MIN_INTERVAL_SECONDS = 60.0 / GEMINI_RPM_LIMIT
 _MAX_INTERVAL_SECONDS = 120.0
-_MAX_RETRIES_PER_QUESTION = 4
+_MAX_RETRIES = 4
 
-# Fixed question set so eval scores are comparable run-over-run. Kept
-# generic (not tied to specific issue numbers) since the underlying data
-# changes as ingestion pulls in new issues.
-TEST_QUESTIONS = [
-    "What are some issues related to embeddings?",
-    "Are there any issues about vector store integrations?",
-    "What issues mention FAISS?",
-    "Are there issues requesting support for new LLM providers?",
-    "What issues are related to prompt templates?",
-    "Are there any issues about chains or agents?",
-    "What issues mention Hugging Face?",
-    "Are there issues about saving or loading models?",
-    "What issues discuss API rate limits or errors?",
-    "Are there issues about documentation improvements?",
-]
+HIT_K = 5          # "did the right issue make the top 5?"
+SEARCH_DEPTH = 10  # how many results we fetch to compute MRR
+FULL_EVAL_QUESTIONS = 5
 
-JUDGE_PROMPT = """You are evaluating a search system for a GitHub issue tracker.
+
+class NoGoldenSetError(RuntimeError):
+    pass
+
+
+def _questions_for(repo: str) -> list[dict]:
+    items = load_golden_set(repo)
+    if not items:
+        raise NoGoldenSetError(
+            f"No golden question set for {repo}. Create one with: "
+            f"python -m pipeline.golden_set generate --repo {repo}"
+        )
+    return items
+
+
+# --- 1. Retrieval eval -----------------------------------------------------
+
+def run_retrieval_eval(repo: str, retrieve=None) -> dict:
+    """
+    retrieve(query, n_results, repo) -> list of issue dicts with "number";
+    injectable for tests, defaults to the agent's real retrieve_issues.
+    """
+    if retrieve is None:
+        from pipeline.agent import retrieve_issues as retrieve
+
+    items = _questions_for(repo)
+    per_question = []
+    for item in items:
+        ranked = [r["number"] for r in retrieve(item["question"], n_results=SEARCH_DEPTH, repo=repo)]
+        per_question.append({
+            "question": item["question"],
+            "expected": item["expected"],
+            "rank": first_hit_rank(ranked, item["expected"]),
+            "hit": hit_at_k(ranked, item["expected"], HIT_K),
+            "rr": reciprocal_rank(ranked, item["expected"]),
+            "returned": ranked,
+        })
+
+    summary = {
+        "repo": repo,
+        "golden_set_version": golden_set_version(repo),
+        "num_questions": len(per_question),
+        "num_reviewed": sum(1 for i in items if i.get("reviewed")),
+        f"hit_at_{HIT_K}": round(mean([q["hit"] for q in per_question]), 3),
+        "mrr": round(mean([q["rr"] for q in per_question]), 3),
+        "misses": [q for q in per_question if not q["hit"]],
+        "results": per_question,
+    }
+    log.info("Retrieval eval for %s: hit@%s=%s mrr=%s over %s questions",
+             repo, HIT_K, summary[f"hit_at_{HIT_K}"], summary["mrr"], summary["num_questions"])
+    return summary
+
+
+# --- 2. Answer eval ----------------------------------------------------------
+
+JUDGE_PROMPT = """You are evaluating an assistant that answers questions about a \
+project's GitHub issues.
 
 Question: {question}
 
-Retrieved results:
-{results}
+Sources the assistant retrieved:
+{sources}
 
-On a scale of 1-5, how relevant are these retrieved results to the question?
-1 = completely irrelevant, 5 = highly relevant and directly answers the question.
-A score of 3 given to genuinely empty results ("No relevant issues found") is
-acceptable IF the question is plausible but the corpus may not cover it --
-don't penalize honest "no results" as harshly as actively wrong results.
+Assistant's answer:
+{answer}
 
-Respond with ONLY a JSON object: {{"score": <int 1-5>, "reason": "<one sentence>"}}"""
+Score each on a 1-5 scale:
+1. faithfulness: does the answer ONLY use information present in the sources \
+above, without inventing facts, issue numbers, or details? (If there are no \
+sources and the answer honestly says nothing relevant was found, that is a 5.)
+2. answer_relevance: does the answer actually address what was asked?
+
+Respond with ONLY a JSON object:
+{{"faithfulness": <int 1-5>, "answer_relevance": <int 1-5>, "reason": "<one sentence>"}}"""
 
 
 def _is_rate_limit_error(e: Exception) -> bool:
@@ -69,252 +128,134 @@ def _is_rate_limit_error(e: Exception) -> bool:
     return "429" in text or "RESOURCE_EXHAUSTED" in text or "rate limit" in text.lower()
 
 
-def _judge(llm, question: str, results: list[dict]) -> dict:
-    if not results:
-        results_text = "No relevant issues found."
-    else:
-        results_text = "\n".join(f"- Issue #{r['number']}: {r['snippet'][:150]}" for r in results)
-
-    prompt = JUDGE_PROMPT.format(question=question, results=results_text)
-    response = llm.invoke(prompt)
-
-    text = extract_text(response.content)
+def parse_judge_response(text: str) -> dict | None:
+    """Scores dict, or None if the judge's output can't be used."""
     text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-
     try:
         parsed = json.loads(text)
-        return {"score": int(parsed["score"]), "reason": parsed.get("reason", "")}
-    except (json.JSONDecodeError, KeyError, ValueError) as e:
-        log.warning("Judge response wasn't valid JSON, defaulting to score=0: %s", text[:200])
-        return {"score": 0, "reason": f"judge parse failure: {e}"}
+        scores = {"faithfulness": int(parsed["faithfulness"]),
+                  "answer_relevance": int(parsed["answer_relevance"])}
+    except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+        return None
+    if not all(1 <= v <= 5 for v in scores.values()):
+        return None
+    scores["reason"] = str(parsed.get("reason", ""))
+    return scores
 
 
-def run_eval(repo: str | None = None) -> dict:
-    # Same repo-scoping fix as agent.py: without this, eval's retrieval
-    # would search across every ingested repo's issues mixed together,
-    # scoring relevance against the wrong data.
+def _judge(llm, question: str, sources: list[dict], answer: str) -> dict | None:
+    sources_text = (
+        "\n".join(f"- Issue #{s['number']}: {s['snippet'][:300]}" for s in sources)
+        if sources else "(none)"
+    )
+    response = llm.invoke(JUDGE_PROMPT.format(question=question, sources=sources_text, answer=answer))
+    result = parse_judge_response(extract_text(response.content))
+    if result is None:
+        log.warning("Judge output unusable for %r", question)
+    return result
+
+
+def _default_llm():
+    from langchain_google_genai import ChatGoogleGenerativeAI
+
+    from pipeline.agent import GEMINI_MODEL, _get_api_key
+
+    return ChatGoogleGenerativeAI(model=GEMINI_MODEL, temperature=0, google_api_key=_get_api_key())
+
+
+def run_full_eval_stream(repo: str | None = None, ask_fn=None, llm=None, min_interval: float | None = None):
+    """
+    Yields {"type": "step"|"final"|"error", ...} events (the UI renders
+    them live). ask_fn/llm/min_interval are injectable for tests.
+    """
     repo = repo or os.environ.get("GITHUB_REPO", "langchain-ai/langchain")
-
-    api_key = _get_api_key()
-    llm = ChatGoogleGenerativeAI(model=GEMINI_MODEL, temperature=0, google_api_key=api_key)
-
-    results = []
-    last_call_at = 0.0
-    current_interval = _MIN_INTERVAL_SECONDS
-
-    for question in TEST_QUESTIONS:
-        elapsed = time.monotonic() - last_call_at
-        if elapsed < current_interval:
-            wait = current_interval - elapsed
-            log.info("Pacing: waiting %.1fs before next judge call (interval=%.1fs)", wait, current_interval)
-            time.sleep(wait)
-
-        retrieved = retrieve_issues(question, n_results=5, repo=repo)
-
-        judgment = None
-        for attempt in range(1, _MAX_RETRIES_PER_QUESTION + 1):
-            try:
-                judgment = _judge(llm, question, retrieved)
-                last_call_at = time.monotonic()
-                break
-            except Exception as e:
-                if not _is_rate_limit_error(e) or attempt == _MAX_RETRIES_PER_QUESTION:
-                    raise
-
-                current_interval = min(current_interval * 2, _MAX_INTERVAL_SECONDS)
-                log.warning(
-                    "Rate limited (attempt %s/%s). Doubling pacing interval to %.1fs and retrying.",
-                    attempt, _MAX_RETRIES_PER_QUESTION, current_interval,
-                )
-                time.sleep(current_interval)
-                last_call_at = time.monotonic()
-
-        results.append({
-            "question": question,
-            "retrieved_count": len(retrieved),
-            "score": judgment["score"],
-            "reason": judgment["reason"],
-        })
-        log.info("Eval: %r -> score=%s (%s)", question, judgment["score"], judgment["reason"])
-
-    scores = [r["score"] for r in results]
-    avg_score = sum(scores) / len(scores) if scores else 0.0
-
-    summary = {
-        "repo": repo,
-        "avg_score": round(avg_score, 2),
-        "num_questions": len(TEST_QUESTIONS),
-        "results": results,
-    }
-    log.info("Eval complete: avg_score=%s across %s questions", summary["avg_score"], summary["num_questions"])
-    return summary
-
-
-# --- Full RAG eval: retrieval + faithfulness + answer relevance -----------
-# Separate from run_eval() above on purpose: that one only exercises
-# retrieval (cheap, no agent/generation call), so it can afford all 10
-# questions on the daily schedule. This one runs the FULL agent (which
-# itself costs 1-2 model calls to decide whether to search and to compose
-# an answer) plus one combined judge call -- roughly 3x the quota cost per
-# question. Kept to a smaller question set and manually triggered (not on
-# the automated daily DAG) so a single run doesn't exhaust the whole day's
-# quota by itself.
-FULL_EVAL_QUESTIONS = TEST_QUESTIONS[:5]
-
-COMBINED_JUDGE_PROMPT = """You are evaluating a RAG (retrieval-augmented generation) \
-system for a GitHub issue tracker.
-
-Question: {question}
-
-Retrieved context (issues the system found):
-{results}
-
-Generated answer:
-{answer}
-
-Score three things, each on a 1-5 scale:
-1. retrieval_relevance: are the retrieved issues actually relevant to the question? \
-(a score of 3 for genuinely empty results is acceptable if the question is plausible \
-but the corpus may not cover it -- don't penalize honest "no results" as harshly as \
-actively wrong results)
-2. faithfulness: does the answer ONLY use information present in the retrieved \
-context above, without inventing facts, issue numbers, or details not actually there?
-3. answer_relevance: does the answer actually address what was asked?
-
-Respond with ONLY a JSON object:
-{{"retrieval_relevance": <int 1-5>, "faithfulness": <int 1-5>, "answer_relevance": <int 1-5>, "reason": "<one sentence covering all three>"}}"""
-
-
-def _judge_full(llm, question: str, sources: list[dict], answer: str) -> dict:
-    if not sources:
-        results_text = "No relevant issues found."
-    else:
-        results_text = "\n".join(f"- Issue #{s['number']}: {s['snippet'][:150]}" for s in sources)
-
-    prompt = COMBINED_JUDGE_PROMPT.format(question=question, results=results_text, answer=answer)
-    response = llm.invoke(prompt)
-
-    text = extract_text(response.content)
-    text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    if ask_fn is None:
+        from pipeline.agent import ask as ask_fn
+    interval = _MIN_INTERVAL_SECONDS if min_interval is None else min_interval
 
     try:
-        parsed = json.loads(text)
-        return {
-            "retrieval_relevance": int(parsed["retrieval_relevance"]),
-            "faithfulness": int(parsed["faithfulness"]),
-            "answer_relevance": int(parsed["answer_relevance"]),
-            "reason": parsed.get("reason", ""),
-        }
-    except (json.JSONDecodeError, KeyError, ValueError) as e:
-        log.warning("Full-eval judge response wasn't valid JSON, defaulting to 0s: %s", text[:200])
-        return {"retrieval_relevance": 0, "faithfulness": 0, "answer_relevance": 0, "reason": f"judge parse failure: {e}"}
-
-
-def run_full_eval_stream(repo: str | None = None):
-    """
-    Generator version of the full eval -- yields progress events as each
-    question is processed, instead of running silently for ~1 minute.
-    Shape of yielded dicts:
-      {"type": "step", "detail": "..."}
-      {"type": "final", "repo": ..., "avg_*": ..., "results": [...]}
-      {"type": "error", "detail": "..."}
-
-    Runs the actual agent (retrieval + generation, the real end-to-end
-    path a user hits) for each question in FULL_EVAL_QUESTIONS, then
-    scores retrieval relevance, faithfulness, and answer relevance in one
-    combined judge call per question. This is the eval that actually
-    checks whether the AGENT'S ANSWER is trustworthy, not just whether
-    search returned relevant documents -- an answer can cite plausible-
-    looking issue numbers while inventing details not in the retrieved
-    context, and only a faithfulness check catches that.
-    """
-    from pipeline.agent import ask
-
-    repo = repo or os.environ.get("GITHUB_REPO", "langchain-ai/langchain")
-
-    try:
-        api_key = _get_api_key()
-    except RuntimeError as e:
+        items = _questions_for(repo)
+        llm = llm or _default_llm()
+    except (NoGoldenSetError, RuntimeError) as e:
         yield {"type": "error", "detail": str(e)}
         return
 
-    llm = ChatGoogleGenerativeAI(model=GEMINI_MODEL, temperature=0, google_api_key=api_key)
-
+    # Prefer reviewed questions; stable order so runs are comparable.
+    items = sorted(items, key=lambda i: not i.get("reviewed"))[:FULL_EVAL_QUESTIONS]
+    total = len(items)
     results = []
     last_call_at = 0.0
-    current_interval = _MIN_INTERVAL_SECONDS
-    total = len(FULL_EVAL_QUESTIONS)
 
-    for idx, question in enumerate(FULL_EVAL_QUESTIONS, start=1):
-        yield {"type": "step", "detail": f'({idx}/{total}) Asking the agent: "{question}"'}
-
-        elapsed = time.monotonic() - last_call_at
-        if elapsed < current_interval:
-            wait = current_interval - elapsed
-            yield {"type": "step", "detail": f"Pacing {wait:.0f}s before the agent call (free-tier rate limit)"}
+    def pace():
+        nonlocal last_call_at
+        wait = interval - (time.monotonic() - last_call_at)
+        if wait > 0:
             time.sleep(wait)
 
+    for idx, item in enumerate(items, start=1):
+        question = item["question"]
+        yield {"type": "step", "detail": f'({idx}/{total}) Asking the agent: "{question}"'}
+        pace()
         try:
-            agent_result = ask(question, repo=repo)
+            agent_result = ask_fn(question, repo=repo)
         except Exception as e:
-            log.warning("Agent failed on eval question %r: %s", question, e)
-            yield {"type": "step", "detail": f"({idx}/{total}) Agent call failed: {e}"}
-            results.append({
-                "question": question, "answer": f"(agent error: {e})", "sources": [],
-                "retrieval_relevance": 0, "faithfulness": 0, "answer_relevance": 0,
-                "reason": "agent call failed, not scored",
-            })
             last_call_at = time.monotonic()
+            yield {"type": "step", "detail": f"({idx}/{total}) Agent call failed: {e}"}
+            results.append({"question": question, "status": "agent_error", "answer": f"(agent error: {e})",
+                            "sources": [], "found_expected": False, "reason": "agent call failed, not scored"})
             continue
         last_call_at = time.monotonic()
 
-        yield {
-            "type": "step",
-            "detail": f"({idx}/{total}) Got an answer citing {len(agent_result['sources'])} source(s). Judging retrieval, faithfulness, and relevance...",
-        }
+        found = first_hit_rank([s["number"] for s in agent_result["sources"]], item["expected"]) is not None
+        yield {"type": "step", "detail": f"({idx}/{total}) Got an answer citing {len(agent_result['sources'])} "
+                                         f"source(s){' incl. the expected issue' if found else ''}. Judging..."}
 
-        elapsed = time.monotonic() - last_call_at
-        if elapsed < current_interval:
-            wait = current_interval - elapsed
-            yield {"type": "step", "detail": f"Pacing {wait:.0f}s before the judge call"}
-            time.sleep(wait)
+        judgment = None
+        for attempt in range(1, _MAX_RETRIES + 1):
+            pace()
+            try:
+                judgment = _judge(llm, question, agent_result["sources"], agent_result["answer"])
+                last_call_at = time.monotonic()
+                break
+            except Exception as e:
+                last_call_at = time.monotonic()
+                if not _is_rate_limit_error(e) or attempt == _MAX_RETRIES:
+                    log.warning("Judge call failed for %r: %s", question, e)
+                    break
+                interval = min(interval * 2, _MAX_INTERVAL_SECONDS)
+                yield {"type": "step", "detail": f"Rate limited; slowing down to one call per {interval:.0f}s"}
 
-        judgment = _judge_full(llm, question, agent_result["sources"], agent_result["answer"])
-        last_call_at = time.monotonic()
+        row = {"question": question, "answer": agent_result["answer"], "sources": agent_result["sources"],
+               "expected": item["expected"], "found_expected": found}
+        if judgment is None:
+            row.update(status="judge_failed", reason="judge output unusable, not scored")
+            yield {"type": "step", "detail": f"({idx}/{total}) Judge output unusable -- counted, not scored"}
+        else:
+            row.update(status="scored", **judgment)
+            yield {"type": "step", "detail": f"({idx}/{total}) faithfulness={judgment['faithfulness']}/5 · "
+                                             f"relevance={judgment['answer_relevance']}/5"}
+        results.append(row)
 
-        results.append({
-            "question": question,
-            "answer": agent_result["answer"],
-            "sources": agent_result["sources"],
-            "retrieval_relevance": judgment["retrieval_relevance"],
-            "faithfulness": judgment["faithfulness"],
-            "answer_relevance": judgment["answer_relevance"],
-            "reason": judgment["reason"],
-        })
-        yield {
-            "type": "step",
-            "detail": f"({idx}/{total}) Scored: retrieval={judgment['retrieval_relevance']}/5 · "
-                      f"faithfulness={judgment['faithfulness']}/5 · relevance={judgment['answer_relevance']}/5",
-        }
-
-    def _avg(key):
-        vals = [r[key] for r in results if key in r]
-        return round(sum(vals) / len(vals), 2) if vals else 0.0
-
+    scored = [r for r in results if r["status"] == "scored"]
+    answered = [r for r in results if r["status"] != "agent_error"]
     yield {
         "type": "final",
         "repo": repo,
+        "golden_set_version": golden_set_version(repo),
         "num_questions": total,
-        "avg_retrieval_relevance": _avg("retrieval_relevance"),
-        "avg_faithfulness": _avg("faithfulness"),
-        "avg_answer_relevance": _avg("answer_relevance"),
+        "num_scored": len(scored),
+        "judge_failures": sum(1 for r in results if r["status"] == "judge_failed"),
+        "agent_errors": sum(1 for r in results if r["status"] == "agent_error"),
+        "found_expected_rate": round(mean([float(r["found_expected"]) for r in answered]), 3),
+        "avg_faithfulness": round(mean([r["faithfulness"] for r in scored]), 2),
+        "avg_answer_relevance": round(mean([r["answer_relevance"] for r in scored]), 2),
         "results": results,
     }
 
 
-def run_full_eval(repo: str | None = None) -> dict:
-    """Blocking wrapper for CLI/non-streaming callers -- drains run_full_eval_stream()."""
-    for event in run_full_eval_stream(repo):
+def run_full_eval(repo: str | None = None, **kwargs) -> dict:
+    """Blocking wrapper -- drains run_full_eval_stream()."""
+    for event in run_full_eval_stream(repo, **kwargs):
         if event["type"] == "final":
             return {k: v for k, v in event.items() if k != "type"}
         if event["type"] == "error":
@@ -323,5 +264,7 @@ def run_full_eval(repo: str | None = None) -> dict:
 
 
 if __name__ == "__main__":
-    summary = run_eval()
-    print(json.dumps(summary, indent=2))
+    target = sys.argv[sys.argv.index("--repo") + 1] if "--repo" in sys.argv else os.environ.get(
+        "GITHUB_REPO", "langchain-ai/langchain")
+    summary = run_retrieval_eval(target)
+    print(json.dumps({k: v for k, v in summary.items() if k != "results"}, indent=2))

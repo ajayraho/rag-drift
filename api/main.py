@@ -16,13 +16,14 @@ import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from pipeline.agent import ask, ask_stream, get_agent
 from pipeline.embed import get_chroma_collection
 from pipeline.log_utils import get_run_logger
 from pipeline.repo_name import is_valid_repo
 from pipeline.eval import run_full_eval, run_full_eval_stream
+from pipeline.mlflow_tracking import log_full_eval
 from pipeline.self_heal import run_synthetic_demo
 
 log = get_run_logger(__name__)
@@ -138,6 +139,17 @@ def drift_simulation_endpoint():
 class EvalRequest(BaseModel):
     repo: str | None = None
 
+    @field_validator("repo")
+    @classmethod
+    def repo_must_be_valid(cls, v):
+        # The repo selects a golden-set FILE on disk -- validate it so it
+        # can't be used for path tricks like "../../etc".
+        if v is None or not v.strip():
+            return None
+        if not is_valid_repo(v.strip()):
+            raise ValueError("repo must be 'owner/name', e.g. facebook/react")
+        return v.strip()
+
 
 @app.post("/eval/run")
 def eval_run_endpoint(request: EvalRequest):
@@ -147,6 +159,7 @@ def eval_run_endpoint(request: EvalRequest):
     except Exception as e:
         log.exception("Full eval failed")
         raise HTTPException(status_code=500, detail=f"Eval error: {e}")
+    result["mlflow_run_id"] = log_full_eval(result)
     return result
 
 
@@ -160,6 +173,9 @@ def eval_run_stream_endpoint(request: EvalRequest):
 
     def event_generator():
         for event in run_full_eval_stream(repo=request.repo):
+            if event["type"] == "final":
+                # Every answer eval is recorded in MLflow (best-effort).
+                event["mlflow_run_id"] = log_full_eval({k: v for k, v in event.items() if k != "type"})
             yield f"data: {json.dumps(event)}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")

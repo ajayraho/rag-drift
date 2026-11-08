@@ -6,7 +6,8 @@ auditable and comparable over time.
 Runnable standalone:
   python -m pipeline.mlflow_tracking                    # full pipeline, default repo
   python -m pipeline.mlflow_tracking --repo owner/name   # full pipeline, specific repo
-  python -m pipeline.mlflow_tracking --eval-only         # eval only, default repo
+  python -m pipeline.mlflow_tracking --eval-only --repo owner/name  # retrieval eval, one repo
+  python -m pipeline.mlflow_tracking --eval-only --all-repos        # retrieval eval, every repo with a golden set
   python -m pipeline.mlflow_tracking --all-repos         # ingest+embed every tracked repo
 """
 
@@ -18,7 +19,7 @@ import mlflow
 
 from pipeline.agent import GEMINI_MODEL
 from pipeline.embed import EMBEDDING_MODEL, run_embedding
-from pipeline.eval import run_eval
+from pipeline.eval import HIT_K, SEARCH_DEPTH, NoGoldenSetError, run_retrieval_eval
 from pipeline.fetch import run_ingestion
 from pipeline.log_utils import get_run_logger
 
@@ -85,14 +86,13 @@ def run_full_pipeline(repo: str | None = None, run_eval_step: bool = True) -> di
         }
 
         if run_eval_step:
-            eval_summary = run_eval()
-            mlflow.log_metric("retrieval_eval_avg_score", eval_summary["avg_score"])
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-                json.dump(eval_summary, f, indent=2)
-                eval_path = f.name
-            mlflow.log_artifact(eval_path, artifact_path="eval")
-            os.unlink(eval_path)
-            result["eval"] = eval_summary
+            try:
+                eval_summary = run_retrieval_eval(repo)
+            except NoGoldenSetError as e:
+                log.info("Skipping eval step: %s", e)
+            else:
+                _log_retrieval_eval(eval_summary)
+                result["eval"] = eval_summary
 
         log.info("MLflow run %s complete: %s", run.info.run_id,
                   {k: v for k, v in result.items() if k not in ("ingestion", "embedding", "eval")})
@@ -148,25 +148,94 @@ def run_all_repos(repos: list[str], runner=None) -> dict:
     return {"succeeded": succeeded, "failed": failed}
 
 
-def run_eval_only() -> dict:
+def _log_json_artifact(data: dict, artifact_path: str) -> None:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(data, f, indent=2, default=str)
+        path = f.name
+    try:
+        mlflow.log_artifact(path, artifact_path=artifact_path)
+    finally:
+        os.unlink(path)
+
+
+def _log_retrieval_eval(summary: dict) -> None:
+    """
+    Everything needed to compare two retrieval eval runs fairly: the
+    scores, AND what they were measured with (question-set version,
+    embedding model, search depth). Called inside an active MLflow run.
+    """
+    mlflow.log_params({
+        "golden_set_version": summary["golden_set_version"],
+        "embedding_model": EMBEDDING_MODEL,
+        "search_depth": SEARCH_DEPTH,
+    })
+    mlflow.log_metrics({
+        f"hit_at_{HIT_K}": summary[f"hit_at_{HIT_K}"],
+        "mrr": summary["mrr"],
+        "eval_num_questions": summary["num_questions"],
+        "eval_num_reviewed": summary["num_reviewed"],
+    })
+    _log_json_artifact(summary, "eval")
+
+
+def run_eval_only(repo: str | None = None) -> dict:
+    """Retrieval eval for one repo as its own MLflow run (no LLM calls)."""
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     mlflow.set_experiment(MLFLOW_EXPERIMENT)
+    repo = repo or os.environ.get("GITHUB_REPO", "langchain-ai/langchain")
 
+    summary = run_retrieval_eval(repo)  # raises NoGoldenSetError before any run is created
     with mlflow.start_run() as run:
-        mlflow.set_tag("run_type", "eval_only")
-        mlflow.log_param("llm_model", GEMINI_MODEL)
+        mlflow.set_tags({"run_type": "retrieval_eval", "repo": repo})
+        mlflow.log_param("repo", repo)
+        _log_retrieval_eval(summary)
+        log.info("Retrieval eval run %s for %s: hit@%s=%s mrr=%s", run.info.run_id, repo,
+                 HIT_K, summary[f"hit_at_{HIT_K}"], summary["mrr"])
+        return {"mlflow_run_id": run.info.run_id, "eval": summary}
 
-        eval_summary = run_eval()
-        mlflow.log_metric("retrieval_eval_avg_score", eval_summary["avg_score"])
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(eval_summary, f, indent=2)
-            eval_path = f.name
-        mlflow.log_artifact(eval_path, artifact_path="eval")
-        os.unlink(eval_path)
+def run_eval_all_repos(repos: list[str]) -> dict:
+    """Daily DAG entrypoint: every tracked repo that HAS a golden set."""
+    def runner(repo):
+        try:
+            run_eval_only(repo)
+        except NoGoldenSetError:
+            log.info("No golden set for %s yet -- skipping eval", repo)
+    return run_all_repos(repos, runner=runner)
 
-        log.info("Eval-only MLflow run %s complete: avg_score=%s", run.info.run_id, eval_summary["avg_score"])
-        return {"mlflow_run_id": run.info.run_id, "eval": eval_summary}
+
+def log_full_eval(summary: dict) -> str | None:
+    """
+    Logs a UI-triggered answer eval (faithfulness / answer relevance) as
+    its own MLflow run. Best-effort: a logging failure must never turn a
+    finished, displayed eval into an error, so it's caught and logged.
+    """
+    try:
+        mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+        mlflow.set_experiment(MLFLOW_EXPERIMENT)
+        with mlflow.start_run() as run:
+            mlflow.set_tags({"run_type": "answer_eval", "repo": summary["repo"]})
+            mlflow.log_params({
+                "repo": summary["repo"],
+                "golden_set_version": summary["golden_set_version"],
+                "llm_model": GEMINI_MODEL,
+            })
+            mlflow.log_metrics({
+                "avg_faithfulness": summary["avg_faithfulness"],
+                "avg_answer_relevance": summary["avg_answer_relevance"],
+                "found_expected_rate": summary["found_expected_rate"],
+                "num_scored": summary["num_scored"],
+                "judge_failures": summary["judge_failures"],
+                "agent_errors": summary["agent_errors"],
+            })
+            # No artifact here on purpose: the experiment's artifact root
+            # is a path inside the Airflow container, which this (API)
+            # process can't write to. The per-question details are shown
+            # in the UI; params + metrics are what we compare over time.
+            return run.info.run_id
+    except Exception:
+        log.exception("Could not log answer eval to MLflow (eval result itself is fine)")
+        return None
 
 
 def _parse_cli_args(argv: list[str]) -> dict:
@@ -205,19 +274,29 @@ if __name__ == "__main__":
             print(f"error: {e}", file=sys.stderr)
             sys.exit(2)
 
-    if args["all_repos"]:
+    if args["eval_only"]:
+        if args["all_repos"]:
+            summary = run_eval_all_repos(resolve_tracked_repos())
+            print(json.dumps(summary, indent=2))
+            sys.exit(1 if summary["failed"] else 0)
+        try:
+            result = run_eval_only(args["repo"])
+        except NoGoldenSetError as e:
+            print(f"error: {e}", file=sys.stderr)
+            sys.exit(2)
+        ev = result["eval"]
+        print(json.dumps({"mlflow_run_id": result["mlflow_run_id"], "repo": ev["repo"],
+                          f"hit_at_{HIT_K}": ev[f"hit_at_{HIT_K}"], "mrr": ev["mrr"],
+                          "num_questions": ev["num_questions"]}, indent=2))
+    elif args["all_repos"]:
         summary = run_all_repos(resolve_tracked_repos())
         print(json.dumps(summary, indent=2))
         # Non-zero if ANY repo failed, so Airflow marks the task failed
         # (and retries) -- but only after every repo got its turn.
         sys.exit(1 if summary["failed"] else 0)
-    elif args["eval_only"]:
-        result = run_eval_only()
-        print(json.dumps({"mlflow_run_id": result["mlflow_run_id"]}, indent=2))
-        print(f"\nRetrieval eval avg score: {result['eval']['avg_score']} / 5")
     else:
         result = run_full_pipeline(repo=args["repo"], run_eval_step=not args["no_eval"])
         printable = {k: v for k, v in result.items() if k != "eval"}
         print(json.dumps(printable, indent=2, default=str))
         if "eval" in result:
-            print(f"\nRetrieval eval avg score: {result['eval']['avg_score']} / 5")
+            print(f"\nRetrieval eval: hit@{HIT_K}={result['eval'][f'hit_at_{HIT_K}']} mrr={result['eval']['mrr']}")
