@@ -2,7 +2,7 @@
 Tests for the incremental ingest cursor.
 
 Unit part (always runs): _max_updated_at picks the cursor from raw
-records, including PRs and records that will be quarantined.
+records and ignores missing/garbage timestamps.
 
 Integration part (auto-skips without Postgres): the cursor is scoped
 per repo -- ingesting repo B must not inherit repo A's high-water mark.
@@ -19,11 +19,11 @@ from pipeline.db import get_conn_params, get_connection
 from pipeline.fetch import _max_updated_at
 
 
-def test_max_updated_at_takes_latest_including_non_issues():
+def test_max_updated_at_takes_latest():
     records = [
         {"updated_at": "2024-01-01T00:00:00Z"},
         {"updated_at": "2024-03-01T00:00:00Z", "pull_request": {}},  # a PR
-        {"updated_at": "2024-02-01T00:00:00Z", "title": "   "},     # will be quarantined
+        {"updated_at": "2024-02-01T00:00:00Z"},
     ]
     cursor = None
     for r in records:
@@ -117,3 +117,29 @@ def test_cursor_advances_on_a_page_of_only_prs(cleanup_repos, monkeypatch):
     fetch.run_ingestion(repo=REPO_A, token=None, max_pages=1)
 
     assert seen[1] == datetime(2024, 5, 5, tzinfo=timezone.utc)
+
+
+@needs_db
+def test_cursor_stays_behind_quarantined_records_so_self_heal_can_recover(cleanup_repos, monkeypatch):
+    """
+    Records quarantined by drift must be re-fetched next run (when a
+    learned mapping can parse them) -- so the cursor must not move past
+    them.
+    """
+    from pipeline import fetch
+
+    valid_old = _issue(940001, "2024-01-01T00:00:00Z")
+    drifted_new = {**_issue(940002, "2024-06-01T00:00:00Z")}
+    drifted_new["status"] = drifted_new.pop("state")  # upstream rename
+    seen = []
+
+    def fake_page(session, repo, page, since, log):
+        seen.append(since)
+        return [valid_old, drifted_new] if page == 1 else []
+
+    monkeypatch.setattr(fetch, "fetch_issues_page", fake_page)
+    first = fetch.run_ingestion(repo=REPO_A, token=None, max_pages=1)
+    fetch.run_ingestion(repo=REPO_A, token=None, max_pages=1)
+
+    assert first["quarantined"] == 1
+    assert seen[1] == datetime(2024, 1, 1, tzinfo=timezone.utc)  # not 2024-06-01

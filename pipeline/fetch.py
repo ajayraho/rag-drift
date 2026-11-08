@@ -98,17 +98,19 @@ def fetch_issues_page(
 
 def _max_updated_at(current: datetime | None, raw: dict) -> datetime | None:
     """
-    Cursor candidate from a RAW record, regardless of whether it turned
-    out to be a valid issue, a PR, or quarantined.
+    Cursor candidate from a raw record. Called for valid issues AND for
+    skipped PRs -- but deliberately NOT for quarantined records.
 
-    The cursor used to advance only on valid issues. A page made up
-    entirely of PRs (common on busy repos -- /issues returns PRs too) or
-    of quarantined records therefore never moved it, so every following
-    run re-fetched the same records and re-quarantined the same bad rows.
-    Advancing past quarantined records is safe: they are stored in
-    `quarantine` with their full payload, which is the replay path, not
-    re-fetching. Unparseable timestamps are ignored (that record is
-    quarantined anyway).
+    PRs: the cursor used to advance only on valid issues, so a page made
+    up entirely of PRs (common on busy repos -- /issues returns PRs too)
+    never moved it, and every following run re-fetched the same PRs.
+
+    Quarantined records: NOT advancing past them is what lets self-heal
+    actually recover data. When a field gets renamed upstream, that run's
+    records are quarantined and a mapping is learned; because the cursor
+    stayed behind them, the NEXT run re-fetches them and they now parse.
+    Advancing past them would strand them in quarantine until a replay
+    mechanism exists (roadmap 4.6). Unparseable timestamps are ignored.
     """
     value = raw.get("updated_at")
     if not isinstance(value, str):
@@ -152,12 +154,12 @@ def run_ingestion(repo: str | None = None, token: str | None = None, max_pages: 
             for raw in issues_raw:
                 fetched_count += 1
                 raw_payloads_sample.append(raw)
-                newest_updated_at = _max_updated_at(newest_updated_at, raw)
                 try:
                     issue = GitHubIssue.from_github_payload(raw, repo=repo, field_overrides=field_overrides)
                 except NotAnIssueError:
                     # Expected, by-design exclusion -- not an error, don't quarantine.
                     skipped_count += 1
+                    newest_updated_at = _max_updated_at(newest_updated_at, raw)
                     continue
                 except (ValidationError, ValueError, KeyError) as e:
                     quarantined_count += 1
@@ -180,6 +182,7 @@ def run_ingestion(repo: str | None = None, token: str | None = None, max_pages: 
 
                 upsert_issue(conn, issue)
                 valid_count += 1
+                newest_updated_at = _max_updated_at(newest_updated_at, raw)
 
             # Commit after each page (not after every single row, not only at
             # the very end): if page 3 of 5 throws, pages 1-2 are already
