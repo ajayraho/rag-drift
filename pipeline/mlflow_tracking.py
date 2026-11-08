@@ -141,7 +141,16 @@ def _parse_cli_args(argv: list[str]) -> dict:
 if __name__ == "__main__":
     import sys
 
+    from pipeline.repo_name import validate_repo
+
     args = _parse_cli_args(sys.argv[1:])
+    if args["repo"] is not None:
+        # Last line of defence: the value may come from Airflow dag_run.conf.
+        try:
+            args["repo"] = validate_repo(args["repo"])
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            sys.exit(2)
 
     if args["eval_only"]:
         result = run_eval_only()

@@ -21,6 +21,7 @@ from pydantic import BaseModel
 from pipeline.agent import ask, ask_stream, get_agent
 from pipeline.embed import get_chroma_collection
 from pipeline.log_utils import get_run_logger
+from pipeline.repo_name import is_valid_repo
 from pipeline.eval import run_full_eval, run_full_eval_stream
 from pipeline.self_heal import run_synthetic_demo
 
@@ -164,11 +165,6 @@ def eval_run_stream_endpoint(request: EvalRequest):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
-def _valid_repo_format(repo: str) -> bool:
-    parts = repo.strip().split("/")
-    return len(parts) == 2 and all(p.strip() for p in parts)
-
-
 @app.post("/trigger-ingestion")
 def trigger_ingestion_endpoint(request: TriggerIngestionRequest):
     """
@@ -178,8 +174,13 @@ def trigger_ingestion_endpoint(request: TriggerIngestionRequest):
     repo on demand, not just the one hardcoded in docker-compose.
     """
     repo = request.repo.strip()
-    if not _valid_repo_format(repo):
-        raise HTTPException(status_code=400, detail="repo must be in 'owner/name' format, e.g. facebook/react")
+    # Strict allow-list, not just "has one slash": this string ends up in
+    # an Airflow task's environment -- see pipeline/repo_name.py.
+    if not is_valid_repo(repo):
+        raise HTTPException(
+            status_code=400,
+            detail="repo must be 'owner/name' using only letters, digits, '-', '_' and '.', e.g. facebook/react",
+        )
 
     try:
         resp = requests.post(
