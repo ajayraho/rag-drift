@@ -55,11 +55,11 @@ flowchart TD
     G --> H["FastAPI<br/>/ask · /eval · /trigger-ingestion"]
 ```
 
-Every stage is tracked in MLflow (ingestion counts, drift alerts, retrieval/faithfulness/answer-relevance scores), and the whole stack is containerized with Docker Compose.
+Ingestion counts, drift alerts and the daily retrieval-eval score are tracked in MLflow (the on-demand full eval -- faithfulness and answer relevance -- is streamed to the UI but not yet logged to MLflow), and the whole stack is containerized with Docker Compose.
 
 ## Capabilities
 
-- **Scheduled + on-demand ingestion** — an Airflow DAG pulls GitHub issues hourly, incrementally (only records changed since the last run), and can also be triggered on-demand from the UI for *any* public repo via Airflow's REST API.
+- **Scheduled + on-demand ingestion** — an Airflow DAG refreshes every tracked repo hourly, incrementally (a per-repo cursor, so only records changed since that repo's last run), and can also be triggered on-demand from the UI for *any* public repo via Airflow's REST API. Repo names are validated against GitHub's naming rules before they get anywhere near a shell.
 - **Real validation, not a happy-path parser** — Pydantic schema checks catch malformed records (blank titles, invalid state values, missing required fields) and route them to a `quarantine` table with the actual reason, instead of crashing the run or silently dropping data.
 - **Incremental embedding** — a content hash decides whether a record actually changed; unchanged issues never get re-embedded, avoiding the classic "re-embed everything every run" cost blowup.
 - **Schema drift detection + self-healing** — fingerprints field presence/type every run; when a field disappears, fuzzy-matches it against the new payload shape and either auto-applies a high-confidence mapping (verified against the pipeline's *real* validation code, not simulated) or flags it for human review rather than guessing.
@@ -93,7 +93,7 @@ cp .env.example .env   # fill in GEMINI_API_KEY, GITHUB_TOKEN, AIRFLOW_API_PASSW
 docker compose up -d --build
 ```
 
-This starts Postgres, a Chroma vector server, Airflow (`localhost:8080`), and the FastAPI + UI (`localhost:8000`). First build takes a few minutes (installing `torch`/`sentence-transformers`). Airflow's browser login uses a randomly-generated password on first boot:
+This starts Postgres, a Chroma vector server, Airflow (`localhost:8080`), and the FastAPI + UI (`localhost:8000`). The pipeline's database schema is applied by alembic migrations on every boot (`airflow-init` runs `python -m pipeline.migrate upgrade head`; already-applied revisions are skipped). First build takes a few minutes (installing `torch`/`sentence-transformers`). Airflow's browser login uses a randomly-generated password on first boot:
 
 ```bash
 docker logs rag_airflow | grep -i password
@@ -105,15 +105,30 @@ Trigger ingestion for a repo from the UI's top bar, then use the Ask / Drift & s
 
 Containerized as four services (Postgres, Chroma server, Airflow, FastAPI) and deployed to an Azure VM. The VM is started on-demand around active demos/interviews rather than left running 24/7 -- a deliberate cost decision for a portfolio project, not a limitation of the stack itself; the same Compose file runs identically on any VM with Docker installed.
 
+## Database migrations
+
+The schema lives in `pipeline/migrations` (alembic), not a one-shot `init.sql`:
+
+```bash
+python -m pipeline.migrate upgrade head          # apply
+python -m pipeline.migrate current               # what's applied
+python -m pipeline.migrate upgrade head --sql    # print the SQL instead of running it
+python -m pipeline.migrate revision -m "add x"   # new revision
+```
+
+Migrations use their own version table (`rag_alembic_version`) because Airflow keeps its metadata -- and its own `alembic_version` table -- in the same database. Existing deployments created by the old `init.sql` adopt migrations with a plain `upgrade head`: the baseline revision is `IF NOT EXISTS` throughout.
+
 ## Testing
 
 ```bash
+pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements-dev.txt
 docker compose up -d postgres
+python -m pipeline.migrate upgrade head
 pytest -v
 ```
 
-28 unit tests (schema validation, drift detection, fuzzy self-heal matching) plus a real integration test that runs the actual ingestion pipeline against a live Postgres -- feeding it deliberately malformed records and asserting quarantine catches them with real reasons, not a mocked assertion.
+Unit tests cover schema validation, drift detection, self-heal matching, repo-name validation (incl. shell-injection payloads), Chroma/model caching, and agent source attribution -- including an end-to-end run of the real LangChain agent loop with a scripted model. Integration tests run the actual ingestion pipeline against a live Postgres: quarantine of malformed and unexpected records, per-repo cursor isolation, and the multi-repo refresh. They auto-skip without a database; GitHub Actions runs everything against a real Postgres service on every push.
 
 ## Honest limitations
 

@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main, production-upgrade]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      # Real Postgres so the integration tests (quarantine, per-repo cursor,
+      # tracked repos) actually run in CI instead of auto-skipping.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: rag_user
+          POSTGRES_PASSWORD: rag_pass
+          POSTGRES_DB: rag_pipeline
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U rag_user -d rag_pipeline"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: rag_pipeline
+      POSTGRES_USER: rag_user
+      POSTGRES_PASSWORD: rag_pass
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"   # matches both Docker images
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - name: Install dependencies (CPU-only torch first)
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements-dev.txt
+      - name: Apply migrations (and prove they round-trip)
+        run: |
+          python -m pipeline.migrate upgrade head
+          python -m pipeline.migrate downgrade base
+          python -m pipeline.migrate upgrade head
+      - name: Run tests
+        run: pytest -v

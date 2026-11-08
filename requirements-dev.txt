@@ -1,0 +1,7 @@
+# Everything needed to run the test suite (CI uses exactly this file).
+# Install CPU-only torch FIRST, same as the Dockerfiles, or pip pulls the
+# multi-GB CUDA build via sentence-transformers:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements-dev.txt
+-r requirements.txt
+pytest>=8.3,<9
