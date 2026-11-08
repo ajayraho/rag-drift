@@ -166,8 +166,12 @@ def _build_search_tool(repo: str):
     path by which a tool call can accidentally search a different repo.
     """
 
-    @tool
-    def search_github_issues(query: str, state: str | None = None) -> str:
+    # content_and_artifact: the LLM sees the formatted text (content), and
+    # the structured issue list rides along on the ToolMessage as
+    # `artifact`. ask_stream reads those artifacts to report the sources
+    # the agent ACTUALLY retrieved -- see _collect_sources.
+    @tool(response_format="content_and_artifact")
+    def search_github_issues(query: str, state: str | None = None) -> tuple[str, list[dict]]:
         """Search the GitHub issues corpus for issues relevant to the query.
         Returns the top matching issues with their title, state, labels, and URL.
 
@@ -177,9 +181,36 @@ def _build_search_tool(repo: str):
             state: optional filter, either "open" or "closed". Leave unset to
                 search across both states.
         """
-        return _format_issues_for_llm(retrieve_issues(query, state=state, repo=repo))
+        issues = retrieve_issues(query, state=state, repo=repo)
+        return _format_issues_for_llm(issues), issues
 
     return search_github_issues
+
+
+def _collect_sources(messages) -> list[dict]:
+    """
+    The issues the agent's tool calls actually returned, in retrieval
+    order, de-duplicated by (repo, number) across multiple tool calls.
+
+    Sources used to come from a SECOND, independent retrieve_issues()
+    call on the raw user question after the agent finished. The agent
+    usually searched with its own rewritten query (and sometimes a state
+    filter), so the UI showed -- and the full eval judged faithfulness
+    against -- documents the model had never seen. If the agent made no
+    tool call at all, sources are now honestly empty.
+    """
+    sources: list[dict] = []
+    seen: set[tuple] = set()
+    for msg in messages:
+        artifact = getattr(msg, "artifact", None)
+        if getattr(msg, "type", None) != "tool" or not isinstance(artifact, list):
+            continue
+        for issue in artifact:
+            key = (issue.get("repo"), issue.get("number"))
+            if key not in seen:
+                seen.add(key)
+                sources.append(issue)
+    return sources
 
 
 def _get_api_key() -> str:
@@ -250,6 +281,7 @@ def ask_stream(question: str, repo: str | None = None, timeout_seconds: int = DE
             inputs = {"messages": [{"role": "user", "content": question}]}
             config = {"recursion_limit": 10}
             last_node_output = None
+            tool_messages = []
 
             for chunk in graph.stream(inputs, stream_mode="updates", config=config):
                 for node_name, node_output in chunk.items():
@@ -265,11 +297,12 @@ def ask_stream(question: str, repo: str | None = None, timeout_seconds: int = DE
                             else:
                                 event_queue.put({"type": "step", "node": "model", "detail": "Composing the final answer"})
                         elif node_name == "tools":
+                            tool_messages.append(msg)
                             event_queue.put({"type": "step", "node": "tools", "detail": "Retrieved results, reasoning over them"})
                     last_node_output = node_output
 
             answer = extract_text(last_node_output["messages"][-1].content)
-            sources = retrieve_issues(question, repo=repo)
+            sources = _collect_sources(tool_messages)
 
             _store_cache(cache_key, {"answer": answer, "sources": sources})
             event_queue.put({"type": "final", "answer": answer, "sources": sources, "cached": False})
