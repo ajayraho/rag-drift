@@ -65,6 +65,25 @@ def get_last_synced_updated_at(conn, repo: str) -> Optional[datetime]:
         return row[0] if row else None
 
 
+def get_tracked_repos(conn) -> list[str]:
+    """
+    Every repo the pipeline has ever ingested -- what the scheduled hourly
+    run refreshes. Reads both pipeline_runs (repo column since migration
+    0002) and issues (covers repos ingested before 0002, whose run rows
+    have repo = NULL).
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT repo FROM pipeline_runs WHERE repo IS NOT NULL
+            UNION
+            SELECT DISTINCT repo FROM issues
+            ORDER BY 1
+            """
+        )
+        return [row[0] for row in cur.fetchall()]
+
+
 def start_run(conn, repo: str) -> int:
     with conn.cursor() as cur:
         cur.execute(

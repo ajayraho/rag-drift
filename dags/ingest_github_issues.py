@@ -2,12 +2,13 @@
 Airflow DAG: runs the full ingest -> embed pipeline on a schedule (or
 on-demand, triggered from the web UI for an arbitrary repo).
 
-Reads an optional `repo` key from the triggering dag_run's conf -- when
+Scheduled runs refresh EVERY tracked repo (--all-repos). Reads an
+optional `repo` key from the triggering dag_run's conf -- when
 the UI triggers this DAG for e.g. "facebook/react", it's passed through
 Jinja templating into the task's environment (PIPELINE_REPO) and
 handed to the pipeline as --repo facebook/react. Falls
-back to the GITHUB_REPO env var (and mlflow_tracking's own default) for
-the normal scheduled runs, which don't set any conf.
+back to refreshing all tracked repos for the normal scheduled runs,
+which don't set any conf.
 
 Uses BashOperator to shell out to a separate virtualenv
 (/opt/pipeline_venv) rather than importing pipeline code directly into
@@ -36,20 +37,30 @@ with DAG(
     tags=["rag-pipeline", "ingestion"],
 ) as dag:
 
+    # Two modes:
+    #   * UI-triggered (conf has "repo"): ingest just that repo.
+    #   * Scheduled (no conf): --all-repos, i.e. every repo ever ingested
+    #     plus GITHUB_REPO. Previously the schedule only refreshed
+    #     GITHUB_REPO, so UI-added repos went stale after their first run.
+    #
     # The repo is passed through the task's ENVIRONMENT, never templated
-    # into the command string. It used to be `--repo {{ dag_run.conf.get('repo') }}`
+    # into the command string. It used to be --repo {{ dag_run.conf.get('repo') }}
     # inside bash_command, so a conf value like "a/b; rm -rf /" became
     # shell syntax. Now bash only ever sees "$PIPELINE_REPO" as one quoted
     # word, whatever it contains -- and the pipeline CLI validates it
     # again against pipeline/repo_name.py before using it.
-    # ${PIPELINE_REPO:+...} drops the flag entirely for scheduled runs
-    # (no conf), so they fall back to GITHUB_REPO as before.
     pipeline_task = BashOperator(
         task_id="run_full_pipeline",
         bash_command=(
-            'cd /opt/airflow && /opt/pipeline_venv/bin/python -m pipeline.mlflow_tracking --no-eval '
-            '${PIPELINE_REPO:+--repo "$PIPELINE_REPO"}'
+            'cd /opt/airflow && '
+            'if [ -n "$PIPELINE_REPO" ]; then '
+            '/opt/pipeline_venv/bin/python -m pipeline.mlflow_tracking --no-eval --repo "$PIPELINE_REPO"; '
+            'else '
+            '/opt/pipeline_venv/bin/python -m pipeline.mlflow_tracking --no-eval --all-repos; '
+            'fi'
         ),
         env={"PIPELINE_REPO": "{{ (dag_run.conf or {}).get('repo', '') }}"},
         append_env=True,  # keep POSTGRES_*, CHROMA_*, GITHUB_TOKEN, ...
+        # Scheduled runs now loop over every tracked repo -- give it room.
+        execution_timeout=timedelta(minutes=50),
     )
