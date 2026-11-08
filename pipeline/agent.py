@@ -121,9 +121,15 @@ def retrieve_issues(query: str, n_results: int = 5, state: str | None = None, re
     because nothing constrained retrieval to the repo the user was
     actually asking about.
     """
-    collection = get_chroma_collection()
     where = _build_where(state, repo)
-    results = collection.query(query_texts=[query], n_results=n_results, where=where)
+    try:
+        results = get_chroma_collection().query(query_texts=[query], n_results=n_results, where=where)
+    except Exception as e:
+        # The collection handle is cached process-wide (see embed.py); if
+        # Chroma restarted or the collection was recreated it can be stale.
+        # Reconnect once, then let a second failure propagate normally.
+        log.warning("Chroma query failed (%s); reconnecting and retrying once", e)
+        results = get_chroma_collection(fresh=True).query(query_texts=[query], n_results=n_results, where=where)
 
     if not results["ids"] or not results["ids"][0]:
         return []

@@ -12,6 +12,7 @@ Runnable standalone: `python -m pipeline.embed`
 """
 
 import os
+import threading
 from functools import lru_cache
 
 import chromadb
@@ -27,22 +28,49 @@ EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 BATCH_SIZE = 200
 
 
-def get_chroma_collection():
+_collection_lock = threading.Lock()
+_collection = None
+
+
+@lru_cache(maxsize=1)
+def get_embedding_function():
     """
-    Cached: without this, every call (e.g. one per agent tool invocation)
-    would reopen a PersistentClient AND reload the sentence-transformers
-    model from disk -- unnecessary overhead when the same process is going
-    to call this repeatedly (e.g. an agent answering many questions).
+    Loaded once per process. Building SentenceTransformerEmbeddingFunction
+    loads the model weights from disk (~90MB for MiniLM, far more for the
+    bigger models on the roadmap) -- this used to happen on EVERY
+    retrieval call, i.e. every agent tool call, every eval question and
+    every /repos request.
     """
-    client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
-    embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-        model_name=EMBEDDING_MODEL
-    )
-    return client.get_or_create_collection(
-        name=COLLECTION_NAME,
-        embedding_function=embedding_fn,
-        metadata={"hnsw:space": "cosine"},
-    )
+    return embedding_functions.SentenceTransformerEmbeddingFunction(model_name=EMBEDDING_MODEL)
+
+
+def get_chroma_collection(fresh: bool = False):
+    """
+    Returns a process-wide cached collection handle (HttpClient + the
+    cached embedding function above).
+
+    The docstring here used to claim this was cached while the function
+    built a brand-new client and reloaded the embedding model on every
+    call (lru_cache was imported but never applied). It's cached now, for
+    real, behind a lock so concurrent API threads don't race to load the
+    model twice.
+
+    fresh=True drops the cached handle and reconnects. A cached handle
+    can go stale if the Chroma server restarts or the collection is
+    deleted and recreated (its internal id changes) -- callers like
+    agent.retrieve_issues retry once with fresh=True on failure instead
+    of failing every request until the process restarts.
+    """
+    global _collection
+    with _collection_lock:
+        if _collection is None or fresh:
+            client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
+            _collection = client.get_or_create_collection(
+                name=COLLECTION_NAME,
+                embedding_function=get_embedding_function(),
+                metadata={"hnsw:space": "cosine"},
+            )
+        return _collection
 
 
 def issue_to_document(issue: dict) -> tuple[str, dict]:
