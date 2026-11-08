@@ -96,6 +96,32 @@ def fetch_issues_page(
     return resp.json()
 
 
+def _max_updated_at(current: datetime | None, raw: dict) -> datetime | None:
+    """
+    Cursor candidate from a RAW record, regardless of whether it turned
+    out to be a valid issue, a PR, or quarantined.
+
+    The cursor used to advance only on valid issues. A page made up
+    entirely of PRs (common on busy repos -- /issues returns PRs too) or
+    of quarantined records therefore never moved it, so every following
+    run re-fetched the same records and re-quarantined the same bad rows.
+    Advancing past quarantined records is safe: they are stored in
+    `quarantine` with their full payload, which is the replay path, not
+    re-fetching. Unparseable timestamps are ignored (that record is
+    quarantined anyway).
+    """
+    value = raw.get("updated_at")
+    if not isinstance(value, str):
+        return current
+    try:
+        ts = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return current
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts if current is None or ts > current else current
+
+
 def run_ingestion(repo: str | None = None, token: str | None = None, max_pages: int = 5) -> dict:
     repo = repo or os.environ.get("GITHUB_REPO", "langchain-ai/langchain")
     token = token or os.environ.get("GITHUB_TOKEN")
@@ -110,9 +136,9 @@ def run_ingestion(repo: str | None = None, token: str | None = None, max_pages: 
     session = build_session(token)
 
     with get_connection() as conn:
-        run_id = start_run(conn)
+        run_id = start_run(conn, repo)
         log = get_run_logger(__name__, run_id)
-        since = get_last_synced_updated_at(conn)
+        since = get_last_synced_updated_at(conn, repo)
         field_overrides = get_active_mapping_overrides(conn, repo)
         if field_overrides:
             log.info("Using %s self-healed field mapping override(s): %s", len(field_overrides), field_overrides)
@@ -126,6 +152,7 @@ def run_ingestion(repo: str | None = None, token: str | None = None, max_pages: 
             for raw in issues_raw:
                 fetched_count += 1
                 raw_payloads_sample.append(raw)
+                newest_updated_at = _max_updated_at(newest_updated_at, raw)
                 try:
                     issue = GitHubIssue.from_github_payload(raw, repo=repo, field_overrides=field_overrides)
                 except NotAnIssueError:
@@ -140,9 +167,6 @@ def run_ingestion(repo: str | None = None, token: str | None = None, max_pages: 
 
                 upsert_issue(conn, issue)
                 valid_count += 1
-
-                if newest_updated_at is None or issue.updated_at > newest_updated_at:
-                    newest_updated_at = issue.updated_at
 
             # Commit after each page (not after every single row, not only at
             # the very end): if page 3 of 5 throws, pages 1-2 are already

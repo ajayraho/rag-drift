@@ -38,30 +38,38 @@ def get_connection():
         conn.close()
 
 
-def get_last_synced_updated_at(conn) -> Optional[datetime]:
+def get_last_synced_updated_at(conn, repo: str) -> Optional[datetime]:
     """
-    Reads the high-water mark from the most recent successful run.
-    This is what makes ingestion incremental: next GitHub call asks
-    for 'since=<this timestamp>' instead of pulling everything.
+    Reads THIS repo's high-water mark from its most recent run that set
+    one. This is what makes ingestion incremental: the next GitHub call
+    asks for 'since=<this timestamp>' instead of pulling everything.
+
+    Scoped by repo on purpose. It used to read the latest cursor across
+    ALL runs, so ingesting repo B after repo A started B from A's
+    timestamp -- B's older issues were never fetched at all. Rows written
+    before migration 0002 have repo = NULL and are ignored here.
     """
     with conn.cursor() as cur:
         cur.execute(
             """
             SELECT last_synced_updated_at
             FROM pipeline_runs
-            WHERE last_synced_updated_at IS NOT NULL
+            WHERE repo = %s
+              AND last_synced_updated_at IS NOT NULL
             ORDER BY run_started_at DESC
             LIMIT 1
-            """
+            """,
+            (repo,),
         )
         row = cur.fetchone()
         return row[0] if row else None
 
 
-def start_run(conn) -> int:
+def start_run(conn, repo: str) -> int:
     with conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO pipeline_runs (run_started_at) VALUES (now()) RETURNING id"
+            "INSERT INTO pipeline_runs (run_started_at, repo) VALUES (now(), %s) RETURNING id",
+            (repo,),
         )
         run_id = cur.fetchone()[0]
     conn.commit()

@@ -45,8 +45,10 @@ def cleanup_test_repo():
     # doesn't leave stray rows for the next test run to trip over.
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM issues WHERE repo = %s", (TEST_REPO,))
-            cur.execute("DELETE FROM quarantine WHERE repo = %s", (TEST_REPO,))
+            # Every table a run writes to -- leftover pipeline_runs rows used
+            # to move the (then global) ingest cursor for real repos.
+            for table in ("issues", "quarantine", "pipeline_runs", "schema_snapshots", "drift_alerts"):
+                cur.execute(f"DELETE FROM {table} WHERE repo = %s", (TEST_REPO,))
 
 
 def _fake_github_page(session, repo, page, since, log):
