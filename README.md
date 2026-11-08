@@ -55,7 +55,7 @@ flowchart TD
     G --> H["FastAPI<br/>/ask · /eval · /trigger-ingestion"]
 ```
 
-Ingestion counts, drift alerts and the daily retrieval-eval score are tracked in MLflow (the on-demand full eval -- faithfulness and answer relevance -- is streamed to the UI but not yet logged to MLflow), and the whole stack is containerized with Docker Compose.
+Ingestion counts, drift alerts, and every eval run (retrieval Hit@5/MRR and answer faithfulness/relevance, each tied to the exact question-set version) are tracked in MLflow, and the whole stack is containerized with Docker Compose.
 
 ## Capabilities
 
@@ -66,7 +66,7 @@ Ingestion counts, drift alerts and the daily retrieval-eval score are tracked in
 - **A genuine tool-calling agent** — built on LangChain/LangGraph's current agent API, repo-scoped so it can never accidentally search the wrong repo's data, with a live streamed reasoning trace instead of a blind spinner.
 - **Honest about not knowing** — the agent is explicitly instructed to say so when a search doesn't turn up anything relevant, instead of inventing a plausible-sounding answer.
 - **Bounded, not hanging, failures** — a hard timeout (enforced independently of the LLM SDK's own unreliable retry settings) means a slow or overloaded upstream model fails cleanly within a bounded time instead of hanging indefinitely — a real bug found and fixed during development, not a hypothetical.
-- **A real RAG eval, not just a demo** — LLM-as-judge scoring across three separate RAGAS-style dimensions (retrieval relevance, faithfulness, answer relevance), streamed live, with rate-limit-aware pacing so it doesn't blow through a free-tier quota in one run.
+- **A real RAG eval, not just a demo** — each repo gets a *golden question set*: questions drafted from closed issues, where the source issue is the known right answer, then human-reviewed. Retrieval is scored objectively (Hit@5: did the right issue make the top 5? MRR: how high?) with no LLM calls, daily. The answer eval runs the real agent and has an LLM judge score faithfulness and answer relevance; judge failures are counted, never silently scored as 0.
 - **Cost-aware by design** — capped tool-call loops, batched judge calls, and an in-process response cache for repeat questions.
 
 ## Screenshots
@@ -117,6 +117,18 @@ python -m pipeline.migrate revision -m "add x"   # new revision
 ```
 
 Migrations use their own version table (`rag_alembic_version`) because Airflow keeps its metadata -- and its own `alembic_version` table -- in the same database. Existing deployments created by the old `init.sql` adopt migrations with a plain `upgrade head`: the baseline revision is `IF NOT EXISTS` throughout.
+
+## Evaluation
+
+```bash
+# 1. Draft a golden question set from a repo's closed, discussed issues (needs GEMINI_API_KEY + ingested data)
+python -m pipeline.golden_set generate --repo langchain-ai/langchain --n 40
+# 2. Review pipeline/golden/langchain-ai__langchain.jsonl: fix or delete weak questions, set "reviewed": true
+# 3. Score retrieval (no LLM calls) and log it to MLflow
+python -m pipeline.mlflow_tracking --eval-only --repo langchain-ai/langchain
+```
+
+The daily `rag_pipeline_eval` DAG repeats step 3 for every repo that has a golden set; the UI's Evaluation tab runs the answer eval. Commit the golden files: they're the fixed yardstick every retrieval change is measured against.
 
 ## Testing
 
