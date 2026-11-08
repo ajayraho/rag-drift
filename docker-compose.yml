@@ -10,7 +10,8 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
+      # No init.sql mount anymore: the pipeline schema is owned by alembic
+      # migrations (pipeline/migrations), applied by airflow-init below.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U rag_user -d rag_pipeline"]
       interval: 5s
@@ -50,8 +51,19 @@ services:
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://rag_user:rag_pass@postgres/rag_pipeline
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW_API_PASSWORD: ${AIRFLOW_API_PASSWORD:-changeme123}
+      # For `python -m pipeline.migrate` (pipeline schema migrations).
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: rag_pipeline
+      POSTGRES_USER: rag_user
+      POSTGRES_PASSWORD: rag_pass
+      PYTHONPATH: /opt/airflow
     entrypoint: /bin/bash
-    command: -c "airflow db init && airflow users create --username api_trigger --password \"$$AIRFLOW_API_PASSWORD\" --firstname API --lastname Trigger --role Admin --email api-trigger@rag-pipeline.local || true"
+    # Order matters: Airflow's own metadata first, then the API user (|| true:
+    # it already exists on every boot after the first), then OUR schema
+    # migrations. Migrations are idempotent -- already-applied revisions are
+    # skipped -- so this is safe on every `docker compose up`.
+    command: -c "airflow db init && (airflow users create --username api_trigger --password \"$$AIRFLOW_API_PASSWORD\" --firstname API --lastname Trigger --role Admin --email api-trigger@rag-pipeline.local || true) && cd /opt/airflow && /opt/pipeline_venv/bin/python -m pipeline.migrate upgrade head"
     volumes:
       - ./dags:/opt/airflow/dags
       - ./pipeline:/opt/airflow/pipeline

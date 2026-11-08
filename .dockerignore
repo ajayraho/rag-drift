@@ -8,4 +8,3 @@ mlruns/
 airflow_chroma_data/
 airflow_mlflow_data/
 dags/
-sql/
