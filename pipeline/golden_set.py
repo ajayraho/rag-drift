@@ -196,7 +196,25 @@ def stats(repo: str) -> dict:
             "reviewed": reviewed, "version": golden_set_version(repo)}
 
 
+def import_log(repo: str, log_file: str) -> dict:
+    """Recover questions from saved log lines: 'Drafted question for #123: ...'."""
+    import re
+    existing = load_golden_set(repo)
+    used = {i.get("source_issue") for i in existing}
+    added = []
+    for m in re.finditer(r"Drafted question for #(\d+): (.+)", Path(log_file).read_text(encoding="utf-8")):
+        n = int(m.group(1))
+        if n not in used:
+            used.add(n)
+            added.append({"question": m.group(2).strip(), "expected": [n], "source_issue": n, "reviewed": False})
+    save_golden_set(repo, existing + added)
+    return {"added": len(added), "total": len(existing) + len(added)}
+
+
 def _cli(argv: list[str]) -> int:
+    if len(argv) >= 4 and argv[0] == "import":
+        print(json.dumps(import_log(argv[argv.index("--repo") + 1], argv[argv.index("--file") + 1]), indent=2))
+        return 0
     if len(argv) < 3 or argv[0] not in ("generate", "stats") or "--repo" not in argv:
         print(__doc__, file=sys.stderr)
         return 2
