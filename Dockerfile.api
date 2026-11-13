@@ -22,7 +22,7 @@ RUN pip install --no-cache-dir -r /api_requirements.txt
 # not on first request -- avoids a slow, unpredictable cold start (and a
 # surprise outbound call to Hugging Face) the first time someone hits the
 # API after a deploy.
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+RUN python -c "from sentence_transformers import SentenceTransformer, CrossEncoder; SentenceTransformer('all-MiniLM-L6-v2'); CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
 
 COPY pipeline/ /app/pipeline/
 COPY api/ /app/api/

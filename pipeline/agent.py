@@ -95,7 +95,14 @@ def _get_cached(key: tuple) -> dict | None:
     return result
 
 
+CACHE_MAX_ENTRIES = 500
+
+
 def _store_cache(key: tuple, result: dict) -> None:
+    # Bounded: drop the oldest entry (dicts keep insertion order) so the
+    # cache can't grow without limit in a long-running API process.
+    if len(_response_cache) >= CACHE_MAX_ENTRIES:
+        _response_cache.pop(next(iter(_response_cache)))
     _response_cache[key] = (result, time.monotonic())
 
 
@@ -112,6 +119,28 @@ def _build_where(state: str | None, repo: str | None) -> dict | None:
     return {"$and": conditions}
 
 
+RERANK_ENABLED = os.environ.get("RERANK", "1") == "1"
+RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+RERANK_CANDIDATES = 20
+
+
+@lru_cache(maxsize=1)
+def get_reranker():
+    from sentence_transformers import CrossEncoder
+    return CrossEncoder(RERANK_MODEL)
+
+
+def rerank(query: str, docs: list[str]) -> list[int]:
+    """
+    Indices of `docs`, best first. Vector search compares two embeddings
+    made separately; a cross-encoder reads the query and each document
+    TOGETHER, which ranks far better but is too slow for the whole index --
+    so we use it only on the top RERANK_CANDIDATES from vector search.
+    """
+    scores = get_reranker().predict([(query, d) for d in docs])
+    return sorted(range(len(docs)), key=lambda i: scores[i], reverse=True)
+
+
 def retrieve_issues(query: str, n_results: int = 5, state: str | None = None, repo: str | None = None) -> list[dict]:
     """
     repo filters via Chroma's `where` clause -- without this, search runs
@@ -122,20 +151,26 @@ def retrieve_issues(query: str, n_results: int = 5, state: str | None = None, re
     actually asking about.
     """
     where = _build_where(state, repo)
+    fetch_n = max(n_results, RERANK_CANDIDATES) if RERANK_ENABLED else n_results
     try:
-        results = get_chroma_collection().query(query_texts=[query], n_results=n_results, where=where)
+        results = get_chroma_collection().query(query_texts=[query], n_results=fetch_n, where=where)
     except Exception as e:
         # The collection handle is cached process-wide (see embed.py); if
         # Chroma restarted or the collection was recreated it can be stale.
         # Reconnect once, then let a second failure propagate normally.
         log.warning("Chroma query failed (%s); reconnecting and retrying once", e)
-        results = get_chroma_collection(fresh=True).query(query_texts=[query], n_results=n_results, where=where)
+        results = get_chroma_collection(fresh=True).query(query_texts=[query], n_results=fetch_n, where=where)
 
     if not results["ids"] or not results["ids"][0]:
         return []
 
+    pairs = list(zip(results["documents"][0], results["metadatas"][0]))
+    if RERANK_ENABLED and len(pairs) > 1:
+        pairs = [pairs[i] for i in rerank(query, [d for d, _ in pairs])]
+    pairs = pairs[:n_results]
+
     issues = []
-    for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
+    for doc, meta in pairs:
         issues.append({
             "number": meta["number"],
             "repo": meta["repo"],
