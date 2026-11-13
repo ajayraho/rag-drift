@@ -180,6 +180,9 @@ def generate_golden_set(repo: str, n: int = 40, llm=None, conn=None, min_interva
             "reviewed": False,
         })
         log.info("Drafted question for #%s: %s", issue["number"], question)
+        # Save after every question: a quota error or Ctrl+C mid-run keeps
+        # what's done, and the next run skips those issues.
+        save_golden_set(repo, existing + added)
 
     path = save_golden_set(repo, existing + added)
     return {"repo": repo, "path": str(path), "added": len(added), "failed": failed,
