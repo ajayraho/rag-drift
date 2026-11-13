@@ -42,7 +42,10 @@ def propose_mapping(
     all_keys = set()
     for payload in raw_payloads:
         all_keys.update(payload.keys())
-    candidate_keys = all_keys - exclude_keys
+    # GitHub pairs many fields with a "*_url" sibling (labels/labels_url,
+    # comments/comments_url). Those are links, never the renamed data
+    # itself, but they score high on name similarity -- exclude them.
+    candidate_keys = {k for k in all_keys - exclude_keys if not k.endswith("_url")}
 
     best = None
     for key in candidate_keys:
@@ -102,7 +105,9 @@ def attempt_self_heal(
             continue
 
         decision = {"field": field, **proposal}
-        if proposal["confidence"] >= AUTO_APPLY_CONFIDENCE_THRESHOLD:
+        # Never auto-apply a mapping whose values have the wrong type
+        # (e.g. a URL string standing in for a list of labels).
+        if proposal["confidence"] >= AUTO_APPLY_CONFIDENCE_THRESHOLD and proposal["type_match"]:
             decision["status"] = "self_healed"
             log.info(
                 "Self-heal: auto-mapping '%s' -> '%s' (confidence=%.2f). Will apply from next run.",

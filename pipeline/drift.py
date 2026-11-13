@@ -56,6 +56,9 @@ def compute_fingerprint(raw_payloads: list[dict]) -> dict:
     return fingerprint
 
 
+MIN_DRIFT_SAMPLE = 20
+
+
 def detect_drift(current: dict, baseline: dict) -> list[dict]:
     """
     Compares this run's fingerprint against the prior run's. Returns a
@@ -119,6 +122,13 @@ def check_drift(conn, repo: str, raw_payloads: list[dict]) -> dict:
 
     if not raw_payloads:
         log.info("No raw payloads this run -- skipping drift check.")
+        return {"alerts": [], "baseline_established": False, "heal_decisions": []}
+
+    # Hourly runs often fetch a handful of records; one issue with a null
+    # body would read as "body presence dropped to 0%". Too small a sample
+    # to judge -- skip, and don't let it become the next baseline either.
+    if len(raw_payloads) < MIN_DRIFT_SAMPLE:
+        log.info("Only %s payloads (< %s) -- too few to judge drift, skipping.", len(raw_payloads), MIN_DRIFT_SAMPLE)
         return {"alerts": [], "baseline_established": False, "heal_decisions": []}
 
     current_fingerprint = compute_fingerprint(raw_payloads)

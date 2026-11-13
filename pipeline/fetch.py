@@ -38,7 +38,9 @@ def build_session(token: str | None) -> requests.Session:
     meaningfully faster once you're pulling multiple pages every run.
     """
     session = requests.Session()
-    headers = {"Accept": "application/vnd.github+json"}
+    # Pinning the REST API version means GitHub won't change response
+    # shapes under us without notice -- the cheapest drift prevention.
+    headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
     session.headers.update(headers)
