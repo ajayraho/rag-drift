@@ -116,6 +116,8 @@ services:
     depends_on:
       chromadb:
         condition: service_started
+      postgres:
+        condition: service_healthy
     environment:
       GITHUB_REPO: langchain-ai/langchain
       GEMINI_API_KEY: ${GEMINI_API_KEY}
@@ -124,6 +126,12 @@ services:
       CHROMA_HOST: chromadb
       CHROMA_PORT: "8000"
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-all-MiniLM-L6-v2}  # must match Airflow's
+      # The review queue (approve/reject self-heal mappings) lives in Postgres.
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: rag_pipeline
+      POSTGRES_USER: rag_user
+      POSTGRES_PASSWORD: rag_pass
       AIRFLOW_BASE_URL: http://airflow-webserver:8080
       AIRFLOW_API_USERNAME: api_trigger
       AIRFLOW_API_PASSWORD: ${AIRFLOW_API_PASSWORD:-changeme123}

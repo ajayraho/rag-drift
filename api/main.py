@@ -232,4 +232,27 @@ def trigger_ingestion_status_endpoint(dag_run_id: str):
     return {"dag_run_id": dag_run_id, "state": data.get("state", "unknown")}
 
 
+@app.get("/reviews")
+def list_reviews_endpoint(repo: str | None = None):
+    """Self-heal mappings waiting for a human (not enough evidence to auto-apply)."""
+    from pipeline.review import list_pending
+    try:
+        return {"reviews": list_pending(repo or None)}
+    except Exception as e:
+        log.exception("Could not list reviews")
+        raise HTTPException(status_code=500, detail=f"Could not list reviews: {e}")
+
+
+@app.post("/reviews/{review_id}/{action}")
+def decide_review_endpoint(review_id: int, action: str):
+    """Approve (mapping saved + quarantine replayed) or reject a pending mapping."""
+    from pipeline.review import decide
+    if action not in ("approve", "reject"):
+        raise HTTPException(status_code=404, detail="action must be approve or reject")
+    try:
+        return decide(review_id, approve=(action == "approve"))
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

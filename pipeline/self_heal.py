@@ -1,126 +1,130 @@
 """
-Self-healing schema adaptation.
+Self-healing schema adaptation, by EVIDENCE rather than by name.
 
 When drift.py flags a field as "disappeared" (presence dropped to ~0),
-this module tries to find its likely replacement in the new payload
-shape -- e.g. GitHub renaming `state` to `status` -- by fuzzy-matching
-key names and checking type compatibility against the pre-drift baseline.
+we look for the field that now carries its data. Many issues in a new
+batch are ones we already store (sorted by updated_at, re-fetched when
+they change), so we know what the missing field's value SHOULD be for
+them. Whichever new key holds exactly those values is the rename:
 
-High-confidence matches are auto-applied as a field mapping override
-(persisted in Postgres), so the NEXT ingestion run correctly extracts
-that field again without a human touching code. Low-confidence or
-no-candidate cases are logged as needing human review instead of
-guessing -- a wrong auto-mapping would be worse than no mapping.
+    'body' vanished; for 38 of 40 issues we already have, the new key
+    'description' contains the exact body text we stored -> that's it.
+
+  * evidence >= 90% over >= 5 known issues -> mapping auto-applied
+  * weaker evidence -> queued for a human (mapping_reviews table / UI)
+  * no candidate, or too few known issues to check -> human review,
+    never a guess
+
+This replaced fuzzy name matching (difflib), which judged by spelling and
+happily mapped `labels` to `labels_url`.
 
 Runnable standalone (synthetic drift scenario, randomized each run):
 `python -m pipeline.self_heal`
-Also exposed as run_synthetic_demo() for the API's live demo endpoint,
-which runs a DIFFERENT random drift scenario against 20 varied sample
-records every call -- not a fixed canned example.
 """
 
-import difflib
 import random
+from datetime import datetime, timezone
 
 from pipeline.log_utils import get_run_logger
 
 log = get_run_logger(__name__)
 
-CANDIDATE_MIN_NAME_SIMILARITY = 0.5
-AUTO_APPLY_CONFIDENCE_THRESHOLD = 0.75
+AUTO_APPLY_EVIDENCE = 0.9
+REVIEW_MIN_EVIDENCE = 0.5
+MIN_KNOWN_OVERLAP = 5
+
+# GitHub payload field -> our `issues` column holding the same data.
+FIELD_TO_COLUMN = {
+    "title": "title", "body": "body", "state": "state", "number": "number",
+    "labels": "labels", "user": "author", "comments": "comments_count",
+    "created_at": "created_at", "updated_at": "updated_at",
+}
 
 
-def propose_mapping(
-    missing_field: str,
-    raw_payloads: list[dict],
-    expected_types: list[str],
-    exclude_keys: set[str],
-) -> dict | None:
-    if not raw_payloads:
+def normalize(field: str, value):
+    """Puts a raw payload value and a stored column value into one comparable form."""
+    if value is None:
+        return None
+    try:
+        if field == "labels":
+            if isinstance(value, str):
+                value = [x.strip() for x in value.split(",") if x.strip()]
+            return tuple(sorted(v["name"] if isinstance(v, dict) else str(v) for v in value))
+        if field == "user":
+            return value.get("login") if isinstance(value, dict) else (value if isinstance(value, str) else None)
+        if field in ("created_at", "updated_at"):
+            if isinstance(value, str):
+                value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            return value.astimezone(timezone.utc).isoformat()
+        if field in ("number", "comments"):
+            return int(value)
+        return str(value)
+    except (TypeError, ValueError, AttributeError, KeyError):
         return None
 
-    all_keys = set()
-    for payload in raw_payloads:
-        all_keys.update(payload.keys())
-    # GitHub pairs many fields with a "*_url" sibling (labels/labels_url,
-    # comments/comments_url). Those are links, never the renamed data
-    # itself, but they score high on name similarity -- exclude them.
-    candidate_keys = {k for k in all_keys - exclude_keys if not k.endswith("_url")}
+
+def propose_mapping(missing_field: str, raw_payloads: list[dict], known: dict[int, object],
+                    exclude_keys: set[str]) -> dict:
+    """
+    known: {issue_id: stored value of missing_field} for issues we already have.
+    Returns the best candidate with its evidence, or a reason why there is none.
+    """
+    overlap = [p for p in raw_payloads if p.get("id") in known
+               and normalize(missing_field, known[p["id"]]) not in (None, "", ())]
+    if len(overlap) < MIN_KNOWN_OVERLAP:
+        return {"candidate_key": None,
+                "reason": f"only {len(overlap)} already-stored issues in this batch (need {MIN_KNOWN_OVERLAP}) to verify a rename"}
+
+    keys = set().union(*(p.keys() for p in overlap)) - exclude_keys
+    keys = {k for k in keys if not k.endswith("_url")}  # links, never the data itself
 
     best = None
-    for key in candidate_keys:
-        name_similarity = difflib.SequenceMatcher(None, missing_field.lower(), key.lower()).ratio()
-        if name_similarity < CANDIDATE_MIN_NAME_SIMILARITY:
-            continue
+    for key in sorted(keys):
+        matched = sum(1 for p in overlap
+                      if normalize(missing_field, p.get(key)) == normalize(missing_field, known[p["id"]]))
+        if matched and (best is None or matched > best["matched"]):
+            best = {"candidate_key": key, "matched": matched}
 
-        present = 0
-        types_seen = set()
-        for payload in raw_payloads:
-            value = payload.get(key)
-            if value is not None:
-                present += 1
-                types_seen.add(type(value).__name__)
-
-        presence_rate = present / len(raw_payloads)
-        type_match = bool(types_seen & set(expected_types)) if expected_types else True
-        confidence = round(name_similarity * 0.6 + presence_rate * 0.3 + (0.1 if type_match else 0.0), 3)
-
-        if best is None or confidence > best["confidence"]:
-            best = {
-                "candidate_key": key,
-                "name_similarity": round(name_similarity, 3),
-                "presence_rate": round(presence_rate, 3),
-                "type_match": type_match,
-                "confidence": confidence,
-            }
-
+    if best is None:
+        return {"candidate_key": None, "reason": "no field in the new payloads holds the values we stored"}
+    best["overlap"] = len(overlap)
+    best["confidence"] = round(best["matched"] / len(overlap), 3)
     return best
 
 
-def attempt_self_heal(
-    repo: str,
-    alerts: list[dict],
-    raw_payloads: list[dict],
-    baseline_fingerprint: dict,
-    core_fields: list[str],
-) -> list[dict]:
+def attempt_self_heal(repo: str, alerts: list[dict], raw_payloads: list[dict],
+                      known_values: dict[str, dict[int, object]], core_fields: list[str]) -> list[dict]:
+    """known_values: {missing_field: {issue_id: stored value}} (see drift.check_drift)."""
     decisions = []
-    exclude_keys = set(core_fields)
-
     for alert in alerts:
         if alert["severity"] != "critical":
             continue
-
         field = alert["field"]
-        expected_types = baseline_fingerprint.get(field, {}).get("types", [])
-        proposal = propose_mapping(field, raw_payloads, expected_types, exclude_keys)
-
-        if proposal is None:
-            decisions.append({
-                "field": field,
-                "status": "needs_review",
-                "reason": "no plausible replacement field found in the new payload shape",
-            })
-            log.warning("Self-heal: no candidate found for missing field '%s' -- needs human review.", field)
+        if field not in FIELD_TO_COLUMN:
+            decisions.append({"field": field, "status": "needs_review",
+                              "reason": f"'{field}' can't be verified against stored data"})
             continue
 
+        proposal = propose_mapping(field, raw_payloads, known_values.get(field, {}), set(core_fields))
         decision = {"field": field, **proposal}
-        # Never auto-apply a mapping whose values have the wrong type
-        # (e.g. a URL string standing in for a list of labels).
-        if proposal["confidence"] >= AUTO_APPLY_CONFIDENCE_THRESHOLD and proposal["type_match"]:
+        evidence = proposal.get("confidence", 0)
+        if proposal["candidate_key"] and evidence >= AUTO_APPLY_EVIDENCE:
             decision["status"] = "self_healed"
-            log.info(
-                "Self-heal: auto-mapping '%s' -> '%s' (confidence=%.2f). Will apply from next run.",
-                field, proposal["candidate_key"], proposal["confidence"],
-            )
+            log.info("Self-heal: '%s' -> '%s' (%s/%s known issues match).",
+                     field, proposal["candidate_key"], proposal["matched"], proposal["overlap"])
         else:
             decision["status"] = "needs_review"
-            log.warning(
-                "Self-heal: best candidate for '%s' is '%s' but confidence too low (%.2f < %.2f) to auto-apply.",
-                field, proposal["candidate_key"], proposal["confidence"], AUTO_APPLY_CONFIDENCE_THRESHOLD,
-            )
+            if proposal["candidate_key"] and evidence < REVIEW_MIN_EVIDENCE:
+                decision["reason"] = (f"best candidate '{proposal['candidate_key']}' matched only "
+                                      f"{proposal['matched']}/{proposal['overlap']} known issues")
+                decision["candidate_key"] = None  # too weak to even suggest
+            elif proposal["candidate_key"]:
+                decision["reason"] = (f"'{proposal['candidate_key']}' matched {proposal['matched']}/"
+                                      f"{proposal['overlap']} known issues -- below auto-apply bar, queued for review")
+            log.warning("Self-heal: '%s' needs review: %s", field, decision.get("reason"))
         decisions.append(decision)
-
     return decisions
 
 
@@ -131,16 +135,12 @@ def attempt_self_heal(
 # (b) are optional fields that still matter (labels, user, comments, body).
 # Required fields are always included in the drift so the extraction proof
 # below is always meaningful; the optional field is a coin flip, for variety.
-# Split by ACTUAL measured confidence (via difflib similarity -- verified,
-# not guessed) against the 0.75 auto-apply threshold:
-#   strong: real renames that keep the root word, e.g. "title_text" -- score
-#           high enough to auto-heal.
-#   weak: plausible-sounding renames that don't share enough characters
-#         with the original name to clear the threshold -- these SHOULD
-#         end up "needs review", and are kept deliberately so that outcome
-#         still shows up sometimes, honestly, just not as the majority case.
-REQUIRED_FIELD_STRONG_ALIASES = {"state": ["status"], "title": ["title_text", "issue_title"]}
-REQUIRED_FIELD_WEAK_ALIASES = {"state": ["issue_status", "lifecycle_state"], "title": ["headline"]}
+# Strong = plain rename (values identical -> evidence 100%, auto-healed).
+REQUIRED_FIELD_STRONG_ALIASES = {"state": ["status", "lifecycle_state"], "title": ["title_text", "headline"]}
+# "Weak" = renamed AND reformatted upstream: the values no longer match what
+# we stored, so there's no evidence -- correctly left for a human.
+REQUIRED_FIELD_WEAK_ALIASES = {"state": ["issue_status"], "title": ["summary"]}
+WEAK_TRANSFORMS = {"state": str.upper, "title": lambda t: f"[{t}]"}
 
 OPTIONAL_FIELD_ALIASES = {
     "labels": ["tags", "label_names"],
@@ -221,6 +221,8 @@ def _apply_drift(payload: dict, plan: dict) -> dict:
         if field in drifted:
             value = drifted.pop(field)
             if new_name:
+                if new_name in REQUIRED_FIELD_WEAK_ALIASES.get(field, []):
+                    value = WEAK_TRANSFORMS[field](value)
                 drifted[new_name] = value
     return drifted
 
@@ -272,7 +274,9 @@ def run_synthetic_demo() -> dict:
     baseline_fp = compute_fingerprint(baseline_payloads)
     drifted_fp = compute_fingerprint(drifted_payloads)
     alerts = detect_drift(drifted_fp, baseline_fp)
-    decisions = attempt_self_heal("demo/repo", alerts, drifted_payloads, baseline_fp, CORE_FIELDS)
+    # The baseline records play the role of "issues we already store".
+    known_values = {f: {p["id"]: p.get(f) for p in baseline_payloads} for f in CORE_FIELDS}
+    decisions = attempt_self_heal("demo/repo", alerts, drifted_payloads, known_values, CORE_FIELDS)
 
     healed_overrides = {d["field"]: d["candidate_key"] for d in decisions if d["status"] == "self_healed"}
 

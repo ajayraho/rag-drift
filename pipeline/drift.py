@@ -118,7 +118,9 @@ def check_drift(conn, repo: str, raw_payloads: list[dict]) -> dict:
          from_github_payload can use them starting next run
     """
     from pipeline.db import get_latest_fingerprint, save_drift_alert, save_fingerprint, save_mapping_override
-    from pipeline.self_heal import attempt_self_heal
+    from pipeline.db import get_known_values
+    from pipeline.review import queue_review, replay_quarantine
+    from pipeline.self_heal import FIELD_TO_COLUMN, attempt_self_heal
 
     if not raw_payloads:
         log.info("No raw payloads this run -- skipping drift check.")
@@ -151,10 +153,19 @@ def check_drift(conn, repo: str, raw_payloads: list[dict]) -> dict:
     if not alerts:
         log.info("No schema drift detected this run (repo=%s, %s payloads sampled).", repo, len(raw_payloads))
 
-    heal_decisions = attempt_self_heal(repo, alerts, raw_payloads, baseline, CORE_FIELDS)
+    # What we already store for the issues in this batch = the evidence.
+    ids = [p["id"] for p in raw_payloads if isinstance(p.get("id"), int)]
+    known_values = {
+        a["field"]: get_known_values(conn, repo, ids, FIELD_TO_COLUMN[a["field"]])
+        for a in alerts if a["severity"] == "critical" and a["field"] in FIELD_TO_COLUMN
+    }
+    heal_decisions = attempt_self_heal(repo, alerts, raw_payloads, known_values, CORE_FIELDS)
     for decision in heal_decisions:
         if decision["status"] == "self_healed":
             save_mapping_override(conn, repo, decision["field"], decision["candidate_key"], decision["confidence"])
+            replay_quarantine(conn, repo)
+        elif decision.get("candidate_key"):
+            queue_review(conn, repo, decision)
 
     return {"alerts": alerts, "baseline_established": False, "heal_decisions": heal_decisions}
 

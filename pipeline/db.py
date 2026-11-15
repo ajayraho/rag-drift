@@ -322,3 +322,13 @@ def get_comments_for_issues(conn, keys: list[tuple[str, int]]) -> dict[tuple[str
         for row in cur.fetchall():
             result[(row["repo"], row["issue_number"])].append(row)
     return result
+
+
+def get_known_values(conn, repo: str, ids: list[int], column: str) -> dict[int, object]:
+    """{issue_id: stored value of `column`} for issues we already have."""
+    allowed = {"title", "body", "state", "number", "labels", "author", "comments_count", "created_at", "updated_at"}
+    if column not in allowed or not ids:
+        return {}
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT id, {column} FROM issues WHERE repo = %s AND id = ANY(%s)", (repo, ids))
+        return dict(cur.fetchall())

@@ -1270,10 +1270,11 @@
 
     <div class="panel" id="panel-drift">
       <p class="intro">
-        Simulates GitHub renaming a field mid-stream: <span class="kbd">state</span> &rarr;
-        <span class="kbd">status</span>, and <span class="kbd">user</span> disappearing with no
-        replacement. Runs the real detector, healer, and extraction code &mdash; including
-        proving the fix on a live record, before and after.
+        Simulates GitHub renaming fields mid-stream (e.g. <span class="kbd">state</span> &rarr;
+        <span class="kbd">status</span>). The healer finds the new field by <b>evidence</b>: which key
+        now holds the exact values we already stored for these issues. Renamed-and-reformatted or
+        dropped fields have no evidence and are left for a human. Runs the real detector, healer,
+        and extraction code on 20 records, before and after.
       </p>
 
       <button class="btn btn-lg" id="driftBtn" onclick="runDrift()">
@@ -1297,6 +1298,12 @@
 
       <div class="records-summary" id="recordsSummary" style="display:none;"></div>
       <div class="records-grid" id="recordsGrid"></div>
+
+      <div class="card" style="margin-top:24px;">
+        <div class="card-header">Mappings waiting for review (real pipeline, repo above)
+          <button class="btn" style="float:right;padding:2px 10px;" onclick="loadReviews()">Refresh</button></div>
+        <div id="reviewList" style="padding:12px;">Click refresh to load.</div>
+      </div>
 
     </div>
 
@@ -1392,6 +1399,31 @@
       });
     });
 
+    async function loadReviews() {
+      const el = document.getElementById('reviewList');
+      const repo = document.getElementById('repoField').value.trim();
+      try {
+        const res = await fetch('/reviews' + (repo ? `?repo=${encodeURIComponent(repo)}` : ''));
+        if (!res.ok) throw new Error(`Request failed (${res.status})`);
+        const { reviews } = await res.json();
+        el.innerHTML = reviews.length ? reviews.map(r => `
+          <div style="padding:8px 0;border-bottom:1px solid var(--border, #ddd);">
+            <b>${escapeHtml(r.original_field)}</b> &rarr; <b>${escapeHtml(r.candidate_field)}</b>
+            &middot; ${r.matched}/${r.overlap} known records match &middot; ${escapeHtml(r.repo)}
+            <span style="float:right;">
+              <button class="btn" onclick="decideReview(${r.id}, 'approve')">Approve</button>
+              <button class="btn" onclick="decideReview(${r.id}, 'reject')">Reject</button>
+            </span>
+          </div>`).join('') : 'Nothing waiting for review.';
+      } catch (e) { el.textContent = e.message; }
+    }
+    async function decideReview(id, action) {
+      const res = await fetch(`/reviews/${id}/${action}`, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      document.getElementById('reviewList').insertAdjacentHTML('afterbegin',
+        `<div>${action === 'approve' ? `Approved &mdash; ${data.replay ? data.replay.recovered : 0} quarantined record(s) recovered.` : 'Rejected.'}</div>`);
+      setTimeout(loadReviews, 1500);
+    }
     function switchTab(name) {
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
       document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
@@ -1528,7 +1560,7 @@
         const decision = healDecisionsByField[field];
         if (!decision) return '';
         if (decision.status === 'self_healed') {
-          return `<div class="record-guess healed">Guessed: '${field}' &rarr; '${decision.candidate_key}' (${(decision.confidence * 100).toFixed(0)}% confident)</div>`;
+          return `<div class="record-guess healed">Healed: '${field}' &rarr; '${decision.candidate_key}' (${decision.matched}/${decision.overlap} known records match)</div>`;
         }
         return `<div class="record-guess review">'${field}': no confident guess — flagged for review</div>`;
       }).join('');
@@ -1584,7 +1616,7 @@
           if (d.status === 'self_healed') {
             steps.push({
               cls: 'self_healed', label: 'Self-healed', text: `Mapped '${d.field}' &rarr; '${d.candidate_key}' automatically.`,
-              meta: `confidence ${(d.confidence * 100).toFixed(0)}% · name similarity ${(d.name_similarity * 100).toFixed(0)}% · type match ${d.type_match}`
+              meta: `evidence: ${d.matched}/${d.overlap} already-stored records have identical values in '${d.candidate_key}'`
             });
           } else {
             steps.push({ cls: 'needs_review', label: 'Needs review', text: `No confident replacement found for '${d.field}'. Left for a human, not guessed.`, meta: d.reason || '' });
