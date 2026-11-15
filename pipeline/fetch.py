@@ -136,12 +136,15 @@ def parse_comment(raw: dict, repo: str) -> dict | None:
         return None
 
 
-def sync_comments(conn, session, repo: str, log, max_pages: int = 10) -> int:
+def sync_comments(conn, session, repo: str, log, max_pages: int | None = None) -> int:
     """
     Pulls comments updated since the newest one we have, upserts them,
     and flags their issues for re-embedding (the thread changed).
     Returns the number of comments stored.
     """
+    # 10 pages (1000 comments) per hourly run; raise COMMENTS_MAX_PAGES for
+    # a one-off backfill (5000 req/hour token limit allows thousands).
+    max_pages = max_pages or int(os.environ.get("COMMENTS_MAX_PAGES", "10"))
     since = get_comments_cursor(conn, repo)
     stored = 0
     for page in range(1, max_pages + 1):
