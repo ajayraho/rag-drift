@@ -1,0 +1,212 @@
+{"question": "Why is Neo4jGraph add_graph_documents writing to the default database despite specifying a custom database?", "expected": [27185], "source_issue": 27185, "reviewed": false}
+{"question": "Does vector store metadata filter support regex or wildcard matching during similarity search?", "expected": [26926], "source_issue": 26926, "reviewed": false}
+{"question": "Why do I get an error when saving HuggingFace embeddings into a Chroma vectorstore?", "expected": [25437], "source_issue": 25437, "reviewed": false}
+{"question": "How does ChatGPTPluginRetriever compare to VectorStoreRetriever for retrieving custom document data?", "expected": [2142], "source_issue": 2142, "reviewed": false}
+{"question": "Why does TransformChain raise a type error when the transform function returns a nested dictionary?", "expected": [9440], "source_issue": 9440, "reviewed": false}
+{"question": "How do I install the unstructured package required for loading PDF documents?", "expected": [20719], "source_issue": 20719, "reviewed": false}
+{"question": "Why are TavilySearchResults tool parameters like include_raw_content and include_answer ignored when invoking the search tool?", "expected": [24265], "source_issue": 24265, "reviewed": false}
+{"question": "How do I pass trust_remote_code=True to HuggingFacePipeline.from_model_id when loading a local model?", "expected": [22528], "source_issue": 22528, "reviewed": false}
+{"question": "How can I use Twitter search API as an agent tool to query tweets in LangChain?", "expected": [11538], "source_issue": 11538, "reviewed": false}
+{"question": "How to prevent self-query constructor from adding filters for metadata attributes that do not exist?", "expected": [25914], "source_issue": 25914, "reviewed": false}
+{"question": "Why does Chroma.from_documents throw a TypeError for duplicate embedding_function keyword arguments?", "expected": [13050], "source_issue": 13050, "reviewed": false}
+{"question": "Why does sending a base64 image to VLLMOpenAI exceed the context length token limit?", "expected": [24107], "source_issue": 24107, "reviewed": false}
+{"question": "How can SQL agent fetch unique non-null sample data when generating schema metadata for sparse tables?", "expected": [7535], "source_issue": 7535, "reviewed": false}
+{"question": "Why does Gemini throw a 400 error about alternating user and model messages when managing conversation history?", "expected": [22651], "source_issue": 22651, "reviewed": false}
+{"question": "How do I use MLflow tracking to log prompts with GraphCypherQAChain?", "expected": [5565], "source_issue": 5565, "reviewed": false}
+{"question": "Why does importing AirbyteStripeLoader fail with ModuleNotFoundError: No module named 'libs'?", "expected": [8996], "source_issue": 8996, "reviewed": false}
+{"question": "Is a higher or lower score more similar in vectorstore similarity_search_with_score?", "expected": [22732], "source_issue": 22732, "reviewed": false}
+{"question": "What is the difference between ConversationalAgent and ConversationalChatAgent?", "expected": [4736], "source_issue": 4736, "reviewed": false}
+{"question": "How to specify a different LLM model in VectorStoreIndexCreator?", "expected": [2175], "source_issue": 2175, "reviewed": false}
+{"question": "Where can I find the integration test suite for vectorstore implementations?", "expected": [2816], "source_issue": 2816, "reviewed": false}
+{"question": "Is there support for ChatDev style thought instruction prompting to replace chain of thought for code generation?", "expected": [10610], "source_issue": 10610, "reviewed": false}
+{"question": "Why does StructuredOutputParser throw TypeError text.trim is not a function when parsing output?", "expected": [12667], "source_issue": 12667, "reviewed": false}
+{"question": "Why does load_summarize_chain with refine chain type return text like 'No changes needed' instead of the actual summary?", "expected": [2504], "source_issue": 2504, "reviewed": false}
+{"question": "How to fix MHTMLLoader UnicodeDecodeError when loading UTF-16 encoded MHTML files?", "expected": [26710], "source_issue": 26710, "reviewed": false}
+{"question": "How can I customize pre-built agent configurations without inheriting or recreating entire class hierarchies?", "expected": [12117], "source_issue": 12117, "reviewed": false}
+{"question": "Why does GoogleGenerativeAI gemini-pro throw an IndexError list index out of range when used in ConversationalRetrievalChain?", "expected": [17800], "source_issue": 17800, "reviewed": false}
+{"question": "How do I run unit and integration tests locally after the libs/langchain directory structure refactoring?", "expected": [8217], "source_issue": 8217, "reviewed": false}
+{"question": "Why does NLAToolkit from_llm_and_spec throw an AttributeError regarding parse_obj when loading an OpenAPI spec?", "expected": [12866], "source_issue": 12866, "reviewed": false}
+{"question": "Why does ReAct agent keep hallucinating user inputs and hitting the max iteration limit?", "expected": [25696], "source_issue": 25696, "reviewed": false}
+{"question": "Why does AgentExecutor raise AssertionError generation is not None when using create_tool_calling_agent?", "expected": [22585], "source_issue": 22585, "reviewed": false}
+{"question": "How to pass search kwargs or vectordbkwargs to ConversationalRetrievalChain without getting ValueError One input key expected?", "expected": [3178], "source_issue": 3178, "reviewed": false}
+{"question": "How can I get EverNoteLoader to create separate documents per note instead of merging all notes together?", "expected": [4493], "source_issue": 4493, "reviewed": false}
+{"question": "How do I fix the missing synchronous browser error when using Playwright tools in an agent?", "expected": [3903], "source_issue": 3903, "reviewed": false}
+{"question": "How to fix Pydantic ValidationError str type expected for qianfan_ak and qianfan_sk in QianfanLLMEndpoint?", "expected": [24126], "source_issue": 24126, "reviewed": false}
+{"question": "Why does LangChain require axios v0.26 causing dependency conflicts with axios v1 in Next.js builds?", "expected": [3065], "source_issue": 3065, "reviewed": false}
+{"question": "Why does ConversationSummaryBufferMemory throw ValueError when used with ChatPromptTemplate and MessagesPlaceholder history?", "expected": [1971], "source_issue": 1971, "reviewed": false}
+{"question": "Why does refine chain fail with context limit error when accumulated answer becomes too large?", "expected": [4288], "source_issue": 4288, "reviewed": false}
+{"question": "Why does using FAISS with TimeWeightedVectorStoreRetriever raise an AttributeError for missing similarity_search_with_relevance_scores?", "expected": [3167], "source_issue": 3167, "reviewed": false}
+{"question": "How to pass dynamic search kwargs filter when calling ConversationalRetrievalChain?", "expected": [9195], "source_issue": 9195, "reviewed": false}
+{"question": "Why do I get AttributeError: module 'openai' has no attribute 'OpenAI' when instantiating ChatOpenAI?", "expected": [16314], "source_issue": 16314, "reviewed": false}
+{"question": "Why does MistralAIEmbeddings throw error 'data' when creating embeddings for a vector store?", "expected": [27790], "source_issue": 27790, "reviewed": false}
+{"question": "Why does calling ChatOpenAI after AzureChatOpenAI raise a Must provide an engine or deployment_id error?", "expected": [6238], "source_issue": 6238, "reviewed": false}
+{"question": "Why does ElasticsearchStore.from_documents fail when trying to index documents?", "expected": [10218], "source_issue": 10218, "reviewed": false}
+{"question": "How to fix 'API deployment for this resource does not exist' error with Azure OpenAI embeddings deployment_name?", "expected": [2190], "source_issue": 2190, "reviewed": false}
+{"question": "Why is system_message in create_conversational_retrieval_agent being passed as a user message instead of a system prompt?", "expected": [11262], "source_issue": 11262, "reviewed": false}
+{"question": "Why does SQLiteCache throw sqlite3.IntegrityError UNIQUE constraint failed during concurrent async LLM calls?", "expected": [983], "source_issue": 983, "reviewed": false}
+{"question": "How can I configure an HTTP proxy for SlackToolkit?", "expected": [14608], "source_issue": 14608, "reviewed": false}
+{"question": "Why does AgentExecutor finish early before hitting max_iterations or max_execution_time limits without completing the goal?", "expected": [13897], "source_issue": 13897, "reviewed": false}
+{"question": "Does LangChain support Nvidia TensorRT LLM for fast inference?", "expected": [13975], "source_issue": 13975, "reviewed": false}
+{"question": "How can I interrupt or stop LLM response generation in progress?", "expected": [10874], "source_issue": 10874, "reviewed": false}
+{"question": "Why does Chroma similarity_search_with_score return smaller scores for more relevant documents?", "expected": [6046], "source_issue": 6046, "reviewed": false}
+{"question": "Why does Neo4j from_existing_graph include property names and newlines in text used for generating embeddings?", "expected": [20423], "source_issue": 20423, "reviewed": false}
+{"question": "How do I fix incorrect parameter names in the OpenAIEmbeddings Azure OpenAI example code?", "expected": [5816], "source_issue": 5816, "reviewed": false}
+{"question": "How can I include column headers in SQLDatabaseChain query results instead of getting tuples?", "expected": [5284], "source_issue": 5284, "reviewed": false}
+{"question": "How can an agent use a tool to request input directly from a human user during execution?", "expected": [1438], "source_issue": 1438, "reviewed": false}
+{"question": "Why does merge_dicts throw a TypeError with prompt_token_count when streaming Gemini responses?", "expected": [23827], "source_issue": 23827, "reviewed": false}
+{"question": "Why is RetrievalQAWithSourcesChain returning off-topic or inaccurate answers from retrieved documents?", "expected": [7702], "source_issue": 7702, "reviewed": false}
+{"question": "Why does load_template throw a GBK UnicodeDecodeError when loading prompt templates on Windows?", "expected": [17995], "source_issue": 17995, "reviewed": false}
+{"question": "Why does RunnableRetry duplicate outputs across items when using batch or abatch?", "expected": [21326], "source_issue": 21326, "reviewed": false}
+{"question": "How can I customize answer_gen_llm when using FlareChain?", "expected": [5255], "source_issue": 5255, "reviewed": false}
+{"question": "How to integrate custom persona prompt libraries into LangChain for character roleplay and tools?", "expected": [9088], "source_issue": 9088, "reviewed": false}
+{"question": "Why are there duplicate Microsoft Word document loaders docx.py and word_document.py?", "expected": [1716], "source_issue": 1716, "reviewed": false}
+{"question": "Why does LlamaCpp show BLAS = 0 after installing llama-cpp-python with cuBLAS GPU support?", "expected": [5819], "source_issue": 5819, "reviewed": false}
+{"question": "Why is StdOutCallbackHandler not printing model response output when verbose is enabled in LLMChain?", "expected": [4278], "source_issue": 4278, "reviewed": false}
+{"question": "How to initialize an existing vector store without inserting documents?", "expected": [5475], "source_issue": 5475, "reviewed": false}
+{"question": "How can I use a custom LLM for QueryCheckerTool in SqlDatabaseToolkit when OpenAI is not available?", "expected": [1719], "source_issue": 1719, "reviewed": false}
+{"question": "How to resolve sqlalchemy.exc.MovedIn20Warning declarative_base deprecation warning when importing langchain?", "expected": [5826], "source_issue": 5826, "reviewed": false}
+{"question": "LLMChain throws pydantic ValidationError prompt value is not a valid dict", "expected": [4281], "source_issue": 4281, "reviewed": false}
+{"question": "How do I parse outputs using multiple response schemas with StructuredOutputParser in LangChain?", "expected": [15670], "source_issue": 15670, "reviewed": false}
+{"question": "Why does ConversationBufferMemory with return_messages=True insert a list of message objects into string prompt template history?", "expected": [11531], "source_issue": 11531, "reviewed": false}
+{"question": "How to use SQLDatabaseChain with MultiPromptChain or router chains?", "expected": [8062], "source_issue": 8062, "reviewed": false}
+{"question": "Why is CharacterTextSplitter creating text chunks larger than the specified chunk_size?", "expected": [7452], "source_issue": 7452, "reviewed": false}
+{"question": "Why is RetrievalQA chain taking a very long time to return answers with Chroma?", "expected": [3202], "source_issue": 3202, "reviewed": false}
+{"question": "How to parse a list of Pydantic objects using PydanticOutputParser?", "expected": [8510], "source_issue": 8510, "reviewed": false}
+{"question": "How do I update ConversationBufferMemory if accessing buffer gives a missing field error?", "expected": [7135], "source_issue": 7135, "reviewed": false}
+{"question": "Why does ShellTool fail with command not found when ZeroShotAgent receives action input wrapped in single quotes?", "expected": [5271], "source_issue": 5271, "reviewed": false}
+{"question": "How to keep hyperlinks when loading PDF documents with PDFLoader?", "expected": [8157], "source_issue": 8157, "reviewed": false}
+{"question": "Why is the Python REPL agent returning incorrect math calculation results?", "expected": [4551], "source_issue": 4551, "reviewed": false}
+{"question": "Why does OpenAIEmbeddings raise an AttributeError for missing max_retries after upgrading LangChain?", "expected": [1759], "source_issue": 1759, "reviewed": false}
+{"question": "Why does the SQL chain generate queries wrapped in extra single quotes causing a MySQL ProgrammingError 1064?", "expected": [13387], "source_issue": 13387, "reviewed": false}
+{"question": "Can I pass a JWT or credentials dictionary directly to GoogleDriveLoader instead of specifying a token file path?", "expected": [15058], "source_issue": 15058, "reviewed": false}
+{"question": "Why does CHAT_CONVERSATIONAL_REACT_DESCRIPTION agent fail when using PythonREPLTool?", "expected": [5094], "source_issue": 5094, "reviewed": false}
+{"question": "How to pass inference component name to SagemakerEndpoint to avoid missing header ValidationError?", "expected": [14344], "source_issue": 14344, "reviewed": false}
+{"question": "How do I handle ToolException raised in a custom BaseTool?", "expected": [10710], "source_issue": 10710, "reviewed": false}
+{"question": "Does LangChain support Google PaLM API?", "expected": [1661], "source_issue": 1661, "reviewed": false}
+{"question": "Why does initializing Xinference throw a Pydantic ValidationError for a missing client field?", "expected": [27295], "source_issue": 27295, "reviewed": false}
+{"question": "How to access OpenAI model and organization info in callback handlers for token usage tracking?", "expected": [1557], "source_issue": 1557, "reviewed": false}
+{"question": "How to include table and column metadata comments in SQLDatabase for prompt context?", "expected": [8558], "source_issue": 8558, "reviewed": false}
+{"question": "How to use multimodal models with image and text inputs in LangChain prompts and chains?", "expected": [1677], "source_issue": 1677, "reviewed": false}
+{"question": "How to use custom callbacks with pandas dataframe agent to inspect generated code before execution?", "expected": [27284], "source_issue": 27284, "reviewed": false}
+{"question": "Why does using an agent as a tool inside another agent result in invalid tool errors?", "expected": [1559], "source_issue": 1559, "reviewed": false}
+{"question": "Why does invoking an agent created with create_react_agent fail with KeyError: 'intermediate_steps'?", "expected": [16006], "source_issue": 16006, "reviewed": false}
+{"question": "Why does bind_tools fail with ValueError field constraints set but not enforced min_items when using Pydantic v1 Field?", "expected": [25036], "source_issue": 25036, "reviewed": false}
+{"question": "Why does UnstructuredURLLoader return an empty list when loading content from URLs?", "expected": [5342], "source_issue": 5342, "reviewed": false}
+{"question": "Why does SharePointLoader fail with ValueError: Unable to fetch root folder when loading documents?", "expected": [22663], "source_issue": 22663, "reviewed": false}
+{"question": "How to resolve SageMaker InvokeEndpoint 422 error missing field inputs in LangChain?", "expected": [7187], "source_issue": 7187, "reviewed": false}
+{"question": "How can we widen the documentation layout so code blocks do not wrap unnecessarily?", "expected": [948], "source_issue": 948, "reviewed": false}
+{"question": "Why does DeepLake vector store still overwrite datasets when passing overwrite=False?", "expected": [4682], "source_issue": 4682, "reviewed": false}
+{"question": "How can I use Hugging Face transformers agents and multimodal tools in LangChain?", "expected": [4528], "source_issue": 4528, "reviewed": false}
+{"question": "How to customize system prompt in ConversationalRetrievalChain to modify output tone or persona?", "expected": [8864], "source_issue": 8864, "reviewed": false}
+{"question": "How can I specify a custom redirect URI when initializing SharePointLoader?", "expected": [11423], "source_issue": 11423, "reviewed": false}
+{"question": "Why does a ReAct agent throw an invalid tool error when configured with only one tool?", "expected": [998], "source_issue": 998, "reviewed": false}
+{"question": "Does LangChain support Azure Cosmos DB for MongoDB vCore vector search?", "expected": [11627], "source_issue": 11627, "reviewed": false}
+{"question": "How do I use similarity_score_threshold with FAISS retriever without getting an unexpected keyword argument score_threshold error?", "expected": [6167], "source_issue": 6167, "reviewed": false}
+{"question": "Why do I get an import error for ChatMessage from vertexai language_models when using ChatVertexAI?", "expected": [7932], "source_issue": 7932, "reviewed": false}
+{"question": "How can I perform OR operations on metadata filters in Qdrant vector store?", "expected": [5073], "source_issue": 5073, "reviewed": false}
+{"question": "Why does ZERO_SHOT_REACT_DESCRIPTION agent fail with connection error when executing custom tools?", "expected": [13968], "source_issue": 13968, "reviewed": false}
+{"question": "Why am I getting TracerException No indexed run ID in LangChainTracer when streaming an AgentExecutor?", "expected": [18254], "source_issue": 18254, "reviewed": false}
+{"question": "Why does ConversationalRetrievalChain generate incorrect standalone questions when sending simple greetings like Hello with chat history?", "expected": [7606], "source_issue": 7606, "reviewed": false}
+{"question": "Can retriever get_relevant_documents return a generator or Iterable for lazy evaluation?", "expected": [5133], "source_issue": 5133, "reviewed": false}
+{"question": "How to use custom ChatPromptTemplate with system message in RetrievalQAWithSourcesChain?", "expected": [3606], "source_issue": 3606, "reviewed": false}
+{"question": "How to sync and update a vector store with changing data without re-indexing everything from scratch?", "expected": [3609], "source_issue": 3609, "reviewed": false}
+{"question": "How do I fix SSL connection errors when calling the Writer LLM API?", "expected": [4391], "source_issue": 4391, "reviewed": false}
+{"question": "Why does calling bind_tools on an AzureOpenAI instance throw an AttributeError in LangChain?", "expected": [22670], "source_issue": 22670, "reviewed": false}
+{"question": "How to resolve ValueError expected where operand value to be str int float when using SelfQueryRetriever with Chroma?", "expected": [15696], "source_issue": 15696, "reviewed": false}
+{"question": "How to delete document embeddings from Chroma vector store using metadata source filter?", "expected": [12846], "source_issue": 12846, "reviewed": false}
+{"question": "Why is chain.batch ignoring the max_concurrency config parameter and causing rate limit errors?", "expected": [15767], "source_issue": 15767, "reviewed": false}
+{"question": "Why am I getting a ValidationError for stream extra fields not permitted in HuggingFaceTextGenInference?", "expected": [9308], "source_issue": 9308, "reviewed": false}
+{"question": "How to combine two FAISS vector stores or update an existing local index with new documents?", "expected": [9909], "source_issue": 9909, "reviewed": false}
+{"question": "How to specify custom instructions per query in HuggingFaceInstructEmbeddings without creating multiple model instances?", "expected": [8176], "source_issue": 8176, "reviewed": false}
+{"question": "Why does Anyscale async invoke fail with TypeError additional_kwargs logprobs already exists in this message with a different type?", "expected": [19595], "source_issue": 19595, "reviewed": false}
+{"question": "How to skip question condensing in ConversationalRetrievalChain to speed up streaming responses?", "expected": [5542], "source_issue": 5542, "reviewed": false}
+{"question": "Why does langchain_core.load dumps fail to serialize AgentExecutor or runnable objects?", "expected": [25664], "source_issue": 25664, "reviewed": false}
+{"question": "Why can't I instantiate a custom LLM class following the example in the documentation?", "expected": [8392], "source_issue": 8392, "reviewed": false}
+{"question": "How to fix ValueError run not supported when there is not exactly one output key when return_source_documents is True?", "expected": [5295], "source_issue": 5295, "reviewed": false}
+{"question": "Why does langsmith evaluate throw an API key error despite passing a client?", "expected": [22281], "source_issue": 22281, "reviewed": false}
+{"question": "Why does Neo4jGraph fail to connect to Neo4j Aura DB with error Could not connect to Neo4j database?", "expected": [19794], "source_issue": 19794, "reviewed": false}
+{"question": "Why does DoctranPropertyExtractor transform_documents raise NotImplementedError?", "expected": [12249], "source_issue": 12249, "reviewed": false}
+{"question": "How can an agent generate answers using internal LLM knowledge without relying on external search or retrieval tools?", "expected": [746], "source_issue": 746, "reviewed": false}
+{"question": "How to catch OpenAI API server errors using try except in LLMChain?", "expected": [950], "source_issue": 950, "reviewed": false}
+{"question": "How do I clear conversation history or reset memory in ChatOpenAI to avoid token limit errors?", "expected": [6461], "source_issue": 6461, "reviewed": false}
+{"question": "How to make an agent stop execution early when a tool returns an error or missing parameter response?", "expected": [928], "source_issue": 928, "reviewed": false}
+{"question": "Why does creating a FAISS vectorstore from_documents throw an index out of range error?", "expected": [7067], "source_issue": 7067, "reviewed": false}
+{"question": "Why does Amazon Bedrock streaming throw TypeError keys must be str not tuple when passing stop sequences?", "expected": [12926], "source_issue": 12926, "reviewed": false}
+{"question": "Why does importing ChatOpenAI from langchain_openai fail with a circular import error?", "expected": [18380], "source_issue": 18380, "reviewed": false}
+{"question": "OutputFixingParser documentation example throws KeyError input to PromptTemplate is missing variables completion", "expected": [23856], "source_issue": 23856, "reviewed": false}
+{"question": "How to integrate self-hosted Searx search engine as a search tool in LangChain?", "expected": [855], "source_issue": 855, "reviewed": false}
+{"question": "How to resolve LlamaIndexGraphRetriever error caused by QUERY_CONFIG_TYPE deprecation in recent llama_index versions?", "expected": [28683], "source_issue": 28683, "reviewed": false}
+{"question": "How to fix OpenAI model context length exceeded error when retrieving large documents?", "expected": [11001], "source_issue": 11001, "reviewed": false}
+{"question": "How can we avoid lockfile merge conflicts when contributing new integrations to the repository?", "expected": [6395], "source_issue": 6395, "reviewed": false}
+{"question": "How to fix TypeError Client.__init__() got an unexpected keyword argument 'proxies' when using ChatOpenAI with httpx 0.28.0?", "expected": [28406], "source_issue": 28406, "reviewed": false}
+{"question": "Why does calling the generate method on ErnieBotChat raise an exception when passing a HumanMessage?", "expected": [10309], "source_issue": 10309, "reviewed": false}
+{"question": "Why is CTransformers running on CPU despite setting gpu_layers in LangChain?", "expected": [11826], "source_issue": 11826, "reviewed": false}
+{"question": "How to dynamically trim retrieved documents in stuff chain to avoid context length exceeded error?", "expected": [687], "source_issue": 687, "reviewed": false}
+{"question": "Why does create_pandas_dataframe_agent fail with iteration limit exceeded or output parsing error?", "expected": [6025], "source_issue": 6025, "reviewed": false}
+{"question": "Why does importing embeddings fail with an ImportError for _is_openai_v1 in langchain community?", "expected": [15671], "source_issue": 15671, "reviewed": false}
+{"question": "How can I combine multiple retrievers to query across several vector stores in a single retrieval chain?", "expected": [3991], "source_issue": 3991, "reviewed": false}
+{"question": "How to interrupt LlamaCpp generation mid-stream using AgentExecutor astream_events?", "expected": [23282], "source_issue": 23282, "reviewed": false}
+{"question": "Why does ElasticVectorSearch similarity search throw a search phase execution exception?", "expected": [5953], "source_issue": 5953, "reviewed": false}
+{"question": "Why does the devcontainer setup fail or get stuck during Docker build?", "expected": [13936], "source_issue": 13936, "reviewed": false}
+{"question": "Why does RedisCache update create duplicate keys for the same prompt instead of overwriting existing entries?", "expected": [25147], "source_issue": 25147, "reviewed": false}
+{"question": "How to add separators between records in AirbyteLoader documents so LLMs can differentiate JSON entities?", "expected": [4776], "source_issue": 4776, "reviewed": false}
+{"question": "Why does FAISS from_documents throw ValueError setting an array element with a sequence when using OpenAIEmbeddings?", "expected": [8159], "source_issue": 8159, "reviewed": false}
+{"question": "Why does Bing search tool throw KeyError webPages when no search results are found?", "expected": [15384], "source_issue": 15384, "reviewed": false}
+{"question": "Why does ChatOllama invoke bound tools on every prompt including simple greetings like hi?", "expected": [28781], "source_issue": 28781, "reviewed": false}
+{"question": "How to refresh boto3 client in NeptuneGraph without re-introspecting the database schema?", "expected": [25505], "source_issue": 25505, "reviewed": false}
+{"question": "Why is GPT-4 agent generating its own Observation instead of waiting for tool execution?", "expected": [4211], "source_issue": 4211, "reviewed": false}
+{"question": "Why does initializing an OpenAI functions agent with no tools result in an error?", "expected": [8080], "source_issue": 8080, "reviewed": false}
+{"question": "How can I use parameterized queries or bind parameters with SQLDatabase.run()?", "expected": [15449], "source_issue": 15449, "reviewed": false}
+{"question": "How do I print or retrieve the actual rendered text from a PromptTemplate?", "expected": [3321], "source_issue": 3321, "reviewed": false}
+{"question": "Why does refine QA chain with OpenAIChat return 'The original answer remains relevant and accurate'?", "expected": [1460], "source_issue": 1460, "reviewed": false}
+{"question": "How do I fix AttributeError: 'Agent' object has no attribute 'is_single_input' when running a custom agent?", "expected": [18292], "source_issue": 18292, "reviewed": false}
+{"question": "How can I view or log the formatted prompt sent to the LLM inside SQLDatabaseChain?", "expected": [1493], "source_issue": 1493, "reviewed": false}
+{"question": "Why does pip install -e . fail with setuptools flat layout error when installing from source?", "expected": [15465], "source_issue": 15465, "reviewed": false}
+{"question": "Why does chain.run return a dict when type hints specify a str return type?", "expected": [7578], "source_issue": 7578, "reviewed": false}
+{"question": "Why does VectorStore delete raise ValueError No ids provided to delete if the ids parameter is optional?", "expected": [11414], "source_issue": 11414, "reviewed": false}
+{"question": "Why does RunnableAssign raise TypeError can only concatenate str not ChatPromptValue to str?", "expected": [23505], "source_issue": 23505, "reviewed": false}
+{"question": "Why does VLLM fail when passing stop sequences as a list of strings in generate?", "expected": [22717], "source_issue": 22717, "reviewed": false}
+{"question": "Milvus vector store connection fails when passing http URI in connection_args", "expected": [12710], "source_issue": 12710, "reviewed": false}
+{"question": "Why does RecursiveCharacterTextSplitter not update the chunk size when re-instantiated with a new chunk_size value?", "expected": [10673], "source_issue": 10673, "reviewed": false}
+{"question": "Cannot import RedisVectorStoreRetriever from langchain.vectorstores.redis", "expected": [10186], "source_issue": 10186, "reviewed": false}
+{"question": "How can I create a custom CallbackHandler to intercept all intermediate step tokens in streaming agents?", "expected": [10315], "source_issue": 10315, "reviewed": false}
+{"question": "Why does HuggingFaceEndpoint raise a KeyError 'summary_text' when setting task to summarization?", "expected": [9286], "source_issue": 9286, "reviewed": false}
+{"question": "How can I pass metadata filters to a PGvector retriever in a ConversationalRetrievalChain?", "expected": [13281], "source_issue": 13281, "reviewed": false}
+{"question": "Where can I find the API reference documentation for the SQLDatabase utility class?", "expected": [8535], "source_issue": 8535, "reviewed": false}
+{"question": "How to disable standalone question generation in ConversationalRetrievalChain?", "expected": [7834], "source_issue": 7834, "reviewed": false}
+{"question": "How do I fix ClientSession unexpected keyword argument verify error in SitemapLoader?", "expected": [6521], "source_issue": 6521, "reviewed": false}
+{"question": "Why am I getting an ImportError for InjectedToolArg when importing create_react_agent from langgraph.prebuilt?", "expected": [25144], "source_issue": 25144, "reviewed": false}
+{"question": "Why does retriever similarity_score_threshold return no documents when used in ConversationalRetrievalChain?", "expected": [12707], "source_issue": 12707, "reviewed": false}
+{"question": "How to pass metadata payload filters to Qdrant vectorstore when calling as_retriever?", "expected": [8126], "source_issue": 8126, "reviewed": false}
+{"question": "How to pass search kwargs or metadata filters to Chroma vectorstore in ConversationalRetrievalChain?", "expected": [2095], "source_issue": 2095, "reviewed": false}
+{"question": "Does HuggingFaceEmbeddings use the HF_HOME environment variable for model caching?", "expected": [25038], "source_issue": 25038, "reviewed": false}
+{"question": "Why does importing spacy cause a ValidationError in langchain.llms get_type_to_cls_dict?", "expected": [14127], "source_issue": 14127, "reviewed": false}
+{"question": "Why are logprobs missing from LLM responses when retrieved from SQLiteCache?", "expected": [5965], "source_issue": 5965, "reviewed": false}
+{"question": "Why does langchain.vectorstores.chroma throw an AttributeError stating module has no attribute 'from_documents'?", "expected": [7119], "source_issue": 7119, "reviewed": false}
+{"question": "Why is WebBaseLoader ignoring the custom User-Agent set in header_template?", "expected": [4167], "source_issue": 4167, "reviewed": false}
+{"question": "How to fix UnstructuredPDFLoader PDFInfoNotInstalledError when poppler is already installed in PATH?", "expected": [26137], "source_issue": 26137, "reviewed": false}
+{"question": "Why does Pinecone similarity_search_with_relevance_scores return no results despite scores exceeding the score_threshold?", "expected": [11587], "source_issue": 11587, "reviewed": false}
+{"question": "How to handle destination chains with different input variable names in MultiPromptChain to avoid ValueError missing input keys?", "expected": [6931], "source_issue": 6931, "reviewed": false}
+{"question": "How to store multimodal messages with images in chat history when using Claude 3 on Bedrock?", "expected": [20623], "source_issue": 20623, "reviewed": false}
+{"question": "Why does LlamaCppEmbeddings fail with GGML_ASSERT kv_self.ctx when vocab_only is set to True?", "expected": [12788], "source_issue": 12788, "reviewed": false}
+{"question": "How to collect and validate user contact details before starting an LLM chat session?", "expected": [14057], "source_issue": 14057, "reviewed": false}
+{"question": "Agent fails to call tools and throws output parsing error with gpt-3.5-turbo-16k", "expected": [6527], "source_issue": 6527, "reviewed": false}
+{"question": "Why does SemanticChunker throw an IndexError out of bounds when splitting text containing only a single sentence?", "expected": [17060], "source_issue": 17060, "reviewed": false}
+{"question": "Why is ChatGoogleGenerativeAI not streaming tokens to the on_llm_new_token callback?", "expected": [22802], "source_issue": 22802, "reviewed": false}
+{"question": "Why does Qdrant raise ValidationError page_content none is not an allowed value when returning documents?", "expected": [1087], "source_issue": 1087, "reviewed": false}
+{"question": "Why does HuggingFacePipeline fail when passed a TextGenerationPipeline object directly?", "expected": [1466], "source_issue": 1466, "reviewed": false}
+{"question": "How can I add pre-computed embeddings directly to a vector store without re-generating them via API?", "expected": [1597], "source_issue": 1597, "reviewed": false}
+{"question": "Why does HuggingFacePipeline with a summarization model return generic output when used in ConversationSummaryBufferMemory?", "expected": [8444], "source_issue": 8444, "reviewed": false}
+{"question": "Why does TimeWeightedVectorStoreRetriever throw a NotImplementedError for similarity_search_with_relevance_scores when used with Chroma?", "expected": [3685], "source_issue": 3685, "reviewed": false}
+{"question": "Why does get_num_tokens_from_messages fail when estimating token count for messages containing image URLs with HTTP redirects?", "expected": [26046], "source_issue": 26046, "reviewed": false}
+{"question": "Is it possible to export or save a ChatOpenAI model into ONNX format?", "expected": [5313], "source_issue": 5313, "reviewed": false}
+{"question": "Why does create_extraction_chain return garbled character encoding when extracting information from Chinese text?", "expected": [14168], "source_issue": 14168, "reviewed": false}
+{"question": "Why does ConversationBufferMemory save duplicate messages when redirecting verbose output to a log file?", "expected": [15161], "source_issue": 15161, "reviewed": false}
+{"question": "How to prevent an agent from answering general knowledge questions outside the custom retrieval tool context?", "expected": [5044], "source_issue": 5044, "reviewed": false}
+{"question": "Why does LLMGraphTransformer produce different results when using ChatOllama from langchain_ollama instead of langchain_community?", "expected": [26614], "source_issue": 26614, "reviewed": false}
+{"question": "Why are the example notebook links in the documentation returning 404 errors?", "expected": [6406], "source_issue": 6406, "reviewed": false}
+{"question": "Why does the Jupyter kernel crash when loading PDF files using DirectoryLoader or UnstructuredPDFLoader?", "expected": [4201], "source_issue": 4201, "reviewed": false}
+{"question": "How to fix UserWarning that language is not default parameter and was transferred to model_kwargs when initializing OpenAI?", "expected": [10230], "source_issue": 10230, "reviewed": false}
+{"question": "How to increase the max_tokens limit for ChatOpenAI when using a LangChain agent?", "expected": [7981], "source_issue": 7981, "reviewed": false}
+{"question": "Why am I getting an ImportError when running the human as a tool documentation example?", "expected": [3615], "source_issue": 3615, "reviewed": false}
+{"question": "Why are extra kwargs passed to tool.run not being forwarded to the underlying tool function?", "expected": [28114], "source_issue": 28114, "reviewed": false}
