@@ -272,3 +272,53 @@ def get_active_mapping_overrides(conn, repo: str) -> dict:
         )
         rows = cur.fetchall()
     return {row[0]: row[1] for row in rows}
+
+# --- Comments ----------------------------------------------------------------
+
+def get_comments_cursor(conn, repo: str) -> Optional[datetime]:
+    """Newest comment updated_at we have for this repo -- the `since` for the next fetch."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT max(updated_at) FROM comments WHERE repo = %s", (repo,))
+        return cur.fetchone()[0]
+
+
+def upsert_comment(conn, comment: dict):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO comments (id, repo, issue_number, author, is_bot, body, created_at, updated_at)
+            VALUES (%(id)s, %(repo)s, %(issue_number)s, %(author)s, %(is_bot)s, %(body)s, %(created_at)s, %(updated_at)s)
+            ON CONFLICT (id) DO UPDATE SET body = EXCLUDED.body, updated_at = EXCLUDED.updated_at
+            """,
+            comment,
+        )
+
+
+def mark_issues_unembedded(conn, repo: str, numbers: list[int]):
+    """A new/edited comment changes the issue's thread, so its chunks must be rebuilt."""
+    if not numbers:
+        return
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE issues SET embedded = false WHERE repo = %s AND number = ANY(%s)",
+            (repo, numbers),
+        )
+
+
+def get_comments_for_issues(conn, keys: list[tuple[str, int]]) -> dict[tuple[str, int], list[dict]]:
+    """{(repo, issue_number): [comment, ...] oldest first} for the given issues."""
+    result: dict[tuple[str, int], list[dict]] = {k: [] for k in keys}
+    if not keys:
+        return result
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT repo, issue_number, author, is_bot, body FROM comments
+            WHERE (repo, issue_number) IN (SELECT * FROM unnest(%s::text[], %s::int[]))
+            ORDER BY created_at
+            """,
+            ([k[0] for k in keys], [k[1] for k in keys]),
+        )
+        for row in cur.fetchall():
+            result[(row["repo"], row["issue_number"])].append(row)
+    return result

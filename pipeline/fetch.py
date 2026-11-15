@@ -18,6 +18,9 @@ from pydantic import ValidationError
 from pipeline.db import (
     finish_run,
     get_active_mapping_overrides,
+    get_comments_cursor,
+    mark_issues_unembedded,
+    upsert_comment,
     get_connection,
     get_last_synced_updated_at,
     insert_quarantine,
@@ -96,6 +99,67 @@ def fetch_issues_page(
 
     resp.raise_for_status()
     return resp.json()
+
+
+def fetch_comments_page(session, repo: str, page: int, since: datetime | None, log) -> list[dict]:
+    """
+    One page of ALL comments in the repo, oldest-updated first. A single
+    repo-wide endpoint (not one call per issue), so it's incremental and
+    cheap exactly like the issues sync.
+    """
+    params = {"per_page": 100, "page": page, "sort": "updated", "direction": "asc"}
+    if since:
+        params["since"] = since.strftime("%Y-%m-%dT%H:%M:%SZ")
+    resp = session.get(f"{GITHUB_API}/repos/{repo}/issues/comments", params=params, timeout=30)
+    check_rate_limit(resp, log)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def parse_comment(raw: dict, repo: str) -> dict | None:
+    """GitHub comment payload -> comments row, or None if it's unusable."""
+    try:
+        issue_number = int(raw["issue_url"].rstrip("/").rsplit("/", 1)[1])
+        user = raw.get("user") or {}
+        login = user.get("login") or ""
+        return {
+            "id": int(raw["id"]),
+            "repo": repo,
+            "issue_number": issue_number,
+            "author": login,
+            "is_bot": user.get("type") == "Bot" or login.endswith("[bot]"),
+            "body": raw.get("body") or "",
+            "created_at": raw["created_at"],
+            "updated_at": raw["updated_at"],
+        }
+    except (KeyError, ValueError, TypeError, AttributeError, IndexError):
+        return None
+
+
+def sync_comments(conn, session, repo: str, log, max_pages: int = 10) -> int:
+    """
+    Pulls comments updated since the newest one we have, upserts them,
+    and flags their issues for re-embedding (the thread changed).
+    Returns the number of comments stored.
+    """
+    since = get_comments_cursor(conn, repo)
+    stored = 0
+    for page in range(1, max_pages + 1):
+        rows = fetch_comments_page(session, repo, page, since, log)
+        touched = set()
+        for raw in rows:
+            comment = parse_comment(raw, repo)
+            if comment is None:
+                continue
+            upsert_comment(conn, comment)
+            touched.add(comment["issue_number"])
+            stored += 1
+        mark_issues_unembedded(conn, repo, sorted(touched))
+        conn.commit()
+        if len(rows) < 100:
+            break
+    log.info("Comments: stored %s (since=%s)", stored, since)
+    return stored
 
 
 def _max_updated_at(current: datetime | None, raw: dict) -> datetime | None:
@@ -198,6 +262,7 @@ def run_ingestion(repo: str | None = None, token: str | None = None, max_pages: 
                 break  # last page
 
         drift_result = check_drift(conn, repo, raw_payloads_sample)
+        comments_count = sync_comments(conn, session, repo, log)
 
         finish_run(conn, run_id, fetched_count, valid_count, quarantined_count, skipped_count, newest_updated_at)
 
@@ -209,6 +274,7 @@ def run_ingestion(repo: str | None = None, token: str | None = None, max_pages: 
         "quarantined": quarantined_count,
         "skipped": skipped_count,
         "newest_updated_at": str(newest_updated_at) if newest_updated_at else None,
+        "comments": comments_count,
         "drift_alerts": drift_result["alerts"],
         "heal_decisions": drift_result["heal_decisions"],
     }
