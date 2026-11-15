@@ -55,7 +55,10 @@ DEFAULT_TIMEOUT_SECONDS = int(os.environ.get("AGENT_TIMEOUT_SECONDS", "45"))
 
 SYSTEM_PROMPT_SINGLE_REPO = """You are a helpful assistant answering questions about \
 GitHub issues in the {repo} repository. Use the search_github_issues tool \
-to find relevant issues before answering. Call the tool AT MOST TWICE total \
+to find relevant issues before answering. If a result looks promising but \
+the snippet is too short to answer from, use get_issue to read that issue's \
+full thread (where fixes are usually posted in the comments). Make AT MOST \
+THREE tool calls in total \
 -- if a search (including a state-filtered one) doesn't turn up what you \
 need, answer honestly with what you found rather than retrying with \
 different phrasings. If the search doesn't turn up anything relevant, say \
@@ -66,8 +69,9 @@ SYSTEM_PROMPT_ALL_REPOS = """You are a helpful assistant answering questions \
 about GitHub issues across every repository that's been ingested into this \
 system. Use the search_github_issues tool to find relevant issues before \
 answering -- results may come from different repos, so always state which \
-repo each issue belongs to when you reference it. Call the tool AT MOST \
-TWICE total -- if a search doesn't turn up what you need, answer honestly \
+repo each issue belongs to when you reference it. Use get_issue (with the \
+issue's repo) to read a promising issue's full thread. Make AT MOST THREE \
+tool calls in total -- if a search doesn't turn up what you need, answer honestly \
 with what you found rather than retrying with different phrasings. If the \
 search doesn't turn up anything relevant, say so honestly instead of making \
 something up."""
@@ -231,6 +235,51 @@ def _build_search_tool(repo: str):
     return search_github_issues
 
 
+GET_ISSUE_MAX_WORDS = 2500
+
+
+def fetch_issue_thread(number: int, repo: str) -> tuple[str, list[dict]]:
+    """
+    Whole thread of one issue, rebuilt from its chunks in the index (no
+    database needed -- the API only talks to Chroma). Returns the text
+    for the LLM plus the issue as a source artifact.
+    """
+    got = get_chroma_collection().get(
+        where={"$and": [{"repo": repo}, {"number": int(number)}]}, include=["documents", "metadatas"],
+    )
+    if not got["ids"]:
+        return f"Issue #{number} is not in the index for {repo}.", []
+    parts = sorted(zip(got["documents"], got["metadatas"]), key=lambda dm: dm[1].get("chunk", 0))
+    header = f"Issue #{number}: "
+    texts = [doc if i == 0 else doc.split("\n\n", 1)[-1] if doc.startswith(header) else doc
+             for i, (doc, _) in enumerate(parts)]
+    words = "\n\n".join(texts).split(" ")
+    text = " ".join(words[:GET_ISSUE_MAX_WORDS]) + (" [...truncated]" if len(words) > GET_ISSUE_MAX_WORDS else "")
+    meta = parts[0][1]
+    source = {"number": meta["number"], "repo": meta["repo"], "state": meta["state"], "labels": meta["labels"],
+              "url": meta["url"], "snippet": text[:300] + ("..." if len(text) > 300 else "")}
+    return f"URL: {meta['url']} [{meta['state']}]\n{text}", [source]
+
+
+def _build_get_issue_tool(bound_repo: str | None):
+    @tool(response_format="content_and_artifact")
+    def get_issue(number: int, repo: str | None = None) -> tuple[str, list[dict]]:
+        """Read the FULL thread (description + comments) of one issue by number.
+        Use after search_github_issues when a result looks relevant but its
+        snippet isn't enough to answer.
+
+        Args:
+            number: the issue number, e.g. 1234.
+            repo: owner/name -- only needed when searching across all repos.
+        """
+        target = bound_repo or repo
+        if not target:
+            return "Pass the issue's repo (owner/name) as well.", []
+        return fetch_issue_thread(number, target)
+
+    return get_issue
+
+
 def _collect_sources(messages) -> list[dict]:
     """
     The issues the agent's tool calls actually returned, in retrieval
@@ -285,7 +334,7 @@ def get_agent(repo: str | None = None):
 
     return create_agent(
         model=llm,
-        tools=[_build_search_tool(repo)],
+        tools=[_build_search_tool(repo), _build_get_issue_tool(repo)],
         system_prompt=system_prompt,
     )
 
@@ -334,6 +383,10 @@ def ask_stream(question: str, repo: str | None = None, timeout_seconds: int = DE
                             tool_calls = getattr(msg, "tool_calls", None)
                             if tool_calls:
                                 for tc in tool_calls:
+                                    if tc.get("name") == "get_issue":
+                                        n = tc.get("args", {}).get("number")
+                                        event_queue.put({"type": "step", "node": "model", "detail": f"Opening issue #{n} to read the full thread"})
+                                        continue
                                     q = tc.get("args", {}).get("query", "")
                                     state = tc.get("args", {}).get("state")
                                     detail = f'Searching issues for "{q}"' + (f" (state={state})" if state else "")
