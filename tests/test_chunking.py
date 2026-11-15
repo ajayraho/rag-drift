@@ -47,3 +47,24 @@ def test_parse_comment():
     c = parse_comment(raw, "o/r")
     assert c["issue_number"] == 42 and c["is_bot"] is True
     assert parse_comment({"id": 1}, "o/r") is None
+
+
+def test_comment_sync_restarts_window_after_page_cap(monkeypatch):
+    from pipeline import fetch
+    calls = []
+    monkeypatch.setattr(fetch, "GITHUB_MAX_PAGE", 2)
+    monkeypatch.setattr(fetch, "get_comments_cursor", lambda conn, repo: f"cursor{len(calls)}")
+    monkeypatch.setattr(fetch, "mark_issues_unembedded", lambda *a: None)
+
+    def page(session, repo, p, since, log):
+        calls.append((p, since))
+        return [{}] * 100 if len(calls) < 5 else []
+
+    monkeypatch.setattr(fetch, "fetch_comments_page", page)
+
+    class Conn:
+        def commit(self): pass
+
+    fetch.sync_comments(Conn(), None, "o/r", log=type("L", (), {"info": lambda *a: None})(), max_pages=10)
+    assert [c[0] for c in calls] == [1, 2, 1, 2, 1]   # never asks for page 3
+    assert calls[2][1] == "cursor2"                    # new window starts from stored cursor

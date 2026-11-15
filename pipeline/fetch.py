@@ -32,6 +32,7 @@ from pipeline.log_utils import get_run_logger
 from pipeline.schema import GitHubIssue, NotAnIssueError
 
 GITHUB_API = "https://api.github.com"
+GITHUB_MAX_PAGE = 300  # GitHub caps page-number pagination here
 
 
 def build_session(token: str | None) -> requests.Session:
@@ -147,7 +148,14 @@ def sync_comments(conn, session, repo: str, log, max_pages: int | None = None) -
     max_pages = max_pages or int(os.environ.get("COMMENTS_MAX_PAGES", "10"))
     since = get_comments_cursor(conn, repo)
     stored = 0
-    for page in range(1, max_pages + 1):
+    page = 0
+    for _ in range(max_pages):
+        page += 1
+        if page > GITHUB_MAX_PAGE:
+            # GitHub rejects page numbers past 300 (422). Start a new window
+            # from the newest comment we've stored; `since` is inclusive, so
+            # the overlap is re-upserted harmlessly.
+            since, page = get_comments_cursor(conn, repo), 1
         rows = fetch_comments_page(session, repo, page, since, log)
         touched = set()
         for raw in rows:
