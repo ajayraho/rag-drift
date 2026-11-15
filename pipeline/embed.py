@@ -12,20 +12,25 @@ Runnable standalone: `python -m pipeline.embed`
 """
 
 import os
+import re
 import threading
 from functools import lru_cache
 
 import chromadb
 from chromadb.utils import embedding_functions
 
-from pipeline.db import get_connection, get_unembedded_issues, mark_embedded
+from pipeline.db import get_comments_for_issues, get_connection, get_unembedded_issues, mark_embedded
 from pipeline.log_utils import get_run_logger
 
 CHROMA_HOST = os.environ.get("CHROMA_HOST", "localhost")
 CHROMA_PORT = int(os.environ.get("CHROMA_PORT", "8001"))
-COLLECTION_NAME = "github_issues"
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"
-BATCH_SIZE = 200
+# Configurable so a better model can be compared on the golden set.
+# Each model gets its own collection (vectors from different models
+# can't be mixed); switching = set the env var + `python -m pipeline.embed --reembed`.
+EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+COLLECTION_NAME = "issue_chunks_" + re.sub(r"[^a-z0-9]+", "_", EMBEDDING_MODEL.lower()).strip("_")
+BATCH_SIZE = 100
+CHUNK_WORDS = 150  # ~200 tokens: fits MiniLM's 256-token window with the title prefix
 
 
 _collection_lock = threading.Lock()
@@ -73,17 +78,58 @@ def get_chroma_collection(fresh: bool = False):
         return _collection
 
 
-def issue_to_document(issue: dict) -> tuple[str, dict]:
-    """
-    Builds the text that actually gets embedded, plus metadata Chroma
-    stores alongside the vector (used for filtering/display at query time,
-    not for the embedding itself).
-    """
-    title = issue["title"] or ""
-    body = issue["body"] or ""
-    document_text = f"{title}\n\n{body}".strip()
+_HTML_COMMENT = re.compile(r"<!--.*?-->", re.S)
+_CHECKBOX_LINE = re.compile(r"^\s*[-*]\s*\[[ xX]\].*$", re.M)
 
-    metadata = {
+
+def clean_text(text: str | None) -> str:
+    """
+    Removes issue-template noise before embedding: hidden <!-- guidance -->
+    blocks and "- [x] I searched existing issues" checklists. Code blocks
+    and stack traces are kept -- they're often what people search for.
+    """
+    text = _HTML_COMMENT.sub("", text or "")
+    text = _CHECKBOX_LINE.sub("", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _windows(words: list[str], size: int) -> list[list[str]]:
+    return [words[i:i + size] for i in range(0, len(words), size)] or [[]]
+
+
+def build_chunks(issue: dict, comments: list[dict]) -> list[str]:
+    """
+    One issue thread -> text chunks of <= CHUNK_WORDS words:
+      * the body, split into windows
+      * human comments (bots skipped), packed together in order until a
+        chunk is full; a long comment is split into windows
+    Every chunk starts with the issue title, so a chunk from the middle of
+    a thread still says what the thread is about.
+    """
+    header = f"Issue #{issue['number']}: {issue['title']}\n\n"
+    chunks = [header + " ".join(w) for w in _windows(clean_text(issue["body"]).split(), CHUNK_WORDS)]
+
+    buffer: list[str] = []
+    for c in comments:
+        if c["is_bot"]:
+            continue
+        words = clean_text(c["body"]).split()
+        if not words:
+            continue
+        words = [f"{c['author']}:"] + words
+        for piece in _windows(words, CHUNK_WORDS):
+            if buffer and len(buffer) + len(piece) > CHUNK_WORDS:
+                chunks.append(header + " ".join(buffer))
+                buffer = []
+            buffer.extend(piece)
+    if buffer:
+        chunks.append(header + " ".join(buffer))
+    return chunks
+
+
+def issue_metadata(issue: dict) -> dict:
+    return {
+        "issue_id": issue["id"],
         "repo": issue["repo"],
         "number": issue["number"],
         "state": issue["state"],
@@ -91,49 +137,54 @@ def issue_to_document(issue: dict) -> tuple[str, dict]:
         "url": f"https://github.com/{issue['repo']}/issues/{issue['number']}",
         "updated_at": issue["updated_at"].isoformat(),
     }
-    return document_text, metadata
 
 
 def run_embedding(batch_size: int = BATCH_SIZE) -> dict:
     log = get_run_logger(__name__)
     collection = get_chroma_collection()
-
-    total_embedded = 0
+    total_issues = total_chunks = 0
 
     with get_connection() as conn:
         while True:
             issues = get_unembedded_issues(conn, limit=batch_size)
             if not issues:
                 break
+            comments = get_comments_for_issues(conn, [(i["repo"], i["number"]) for i in issues])
 
-            ids = [str(issue["id"]) for issue in issues]
-            documents = []
-            metadatas = []
+            ids, documents, metadatas = [], [], []
             for issue in issues:
-                doc_text, meta = issue_to_document(issue)
-                documents.append(doc_text)
-                metadatas.append(meta)
+                # Drop this issue's old chunks first: if a thread now yields
+                # fewer chunks, upsert alone would leave stale ones behind.
+                collection.delete(where={"issue_id": issue["id"]})
+                meta = issue_metadata(issue)
+                for idx, text in enumerate(build_chunks(issue, comments[(issue["repo"], issue["number"])])):
+                    ids.append(f"{issue['id']}:{idx}")
+                    documents.append(text)
+                    metadatas.append({**meta, "chunk": idx})
 
-            # upsert (not add): if an issue is being re-embedded because its
-            # content changed, this overwrites the old vector instead of
-            # creating a duplicate entry under the same id.
             collection.upsert(ids=ids, documents=documents, metadatas=metadatas)
-
-            mark_embedded(conn, [issue["id"] for issue in issues])
-
-            total_embedded += len(issues)
-            log.info("Embedded batch of %s issues (running total=%s)", len(issues), total_embedded)
-
+            mark_embedded(conn, [i["id"] for i in issues])
+            total_issues += len(issues)
+            total_chunks += len(ids)
+            log.info("Embedded %s issues as %s chunks (running total=%s issues)", len(issues), len(ids), total_issues)
             if len(issues) < batch_size:
                 break
 
-    result = {
-        "embedded_count": total_embedded,
-        "collection_count": collection.count(),
-    }
+    result = {"embedded_count": total_issues, "chunk_count": total_chunks, "collection_count": collection.count()}
     log.info("Embedding run complete: %s", result)
     return result
 
 
+def reset_for_reembed() -> int:
+    """Marks every issue unembedded -- run after changing EMBEDDING_MODEL."""
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE issues SET embedded = false")
+        return cur.rowcount
+
+
 if __name__ == "__main__":
-    run_embedding()
+    import sys
+
+    if "--reembed" in sys.argv:
+        print(f"Marked {reset_for_reembed()} issues for re-embedding into {COLLECTION_NAME}")
+    print(run_embedding())

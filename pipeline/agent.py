@@ -121,7 +121,7 @@ def _build_where(state: str | None, repo: str | None) -> dict | None:
 
 RERANK_ENABLED = os.environ.get("RERANK", "1") == "1"
 RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-RERANK_CANDIDATES = 20
+RERANK_CANDIDATES = 30  # chunks, not issues -- several can belong to one thread
 
 
 @lru_cache(maxsize=1)
@@ -151,7 +151,9 @@ def retrieve_issues(query: str, n_results: int = 5, state: str | None = None, re
     actually asking about.
     """
     where = _build_where(state, repo)
-    fetch_n = max(n_results, RERANK_CANDIDATES) if RERANK_ENABLED else n_results
+    # The index holds chunks; fetch extra so that after collapsing chunks
+    # to their issue we still have n_results distinct issues.
+    fetch_n = max(n_results * 4, RERANK_CANDIDATES if RERANK_ENABLED else 0)
     try:
         results = get_chroma_collection().query(query_texts=[query], n_results=fetch_n, where=where)
     except Exception as e:
@@ -167,7 +169,14 @@ def retrieve_issues(query: str, n_results: int = 5, state: str | None = None, re
     pairs = list(zip(results["documents"][0], results["metadatas"][0]))
     if RERANK_ENABLED and len(pairs) > 1:
         pairs = [pairs[i] for i in rerank(query, [d for d, _ in pairs])]
-    pairs = pairs[:n_results]
+    # Best chunk per issue, in ranked order.
+    seen, best = set(), []
+    for doc, meta in pairs:
+        key = (meta["repo"], meta["number"])
+        if key not in seen:
+            seen.add(key)
+            best.append((doc, meta))
+    pairs = best[:n_results]
 
     issues = []
     for doc, meta in pairs:
