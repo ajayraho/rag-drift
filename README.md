@@ -105,7 +105,7 @@ Measured on 212 questions; re-checked on an expanded 304-question set: chunks 0.
 ## Running it locally
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/rag-drift-pipeline.git
+git clone https://github.com/ajayraho/rag-drift-pipeline.git
 cd rag-drift-pipeline
 cp .env.example .env   # fill in GEMINI_API_KEY, GITHUB_TOKEN, AIRFLOW_API_PASSWORD
 docker compose up -d --build
