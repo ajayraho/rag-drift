@@ -28,7 +28,12 @@ CHROMA_PORT = int(os.environ.get("CHROMA_PORT", "8001"))
 # Each model gets its own collection (vectors from different models
 # can't be mixed); switching = set the env var + `python -m pipeline.embed --reembed`.
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
-COLLECTION_NAME = "issue_chunks_" + re.sub(r"[^a-z0-9]+", "_", EMBEDDING_MODEL.lower()).strip("_")
+# CHUNKING=0 rebuilds the original "one vector per issue (title + raw body)"
+# index in its own collection -- only to measure the baseline on the
+# current golden set. The chunked collection is left untouched.
+CHUNKING = os.environ.get("CHUNKING", "1") == "1"
+COLLECTION_NAME = ("issue_chunks_" if CHUNKING else "issue_whole_") + re.sub(
+    r"[^a-z0-9]+", "_", EMBEDDING_MODEL.lower()).strip("_")
 BATCH_SIZE = 100
 CHUNK_WORDS = 150  # ~200 tokens: fits MiniLM's 256-token window with the title prefix
 
@@ -106,6 +111,8 @@ def build_chunks(issue: dict, comments: list[dict]) -> list[str]:
     Every chunk starts with the issue title, so a chunk from the middle of
     a thread still says what the thread is about.
     """
+    if not CHUNKING:
+        return [f"{issue['title'] or ''}\n\n{issue['body'] or ''}".strip()]
     header = f"Issue #{issue['number']}: {issue['title']}\n\n"
     chunks = [header + " ".join(w) for w in _windows(clean_text(issue["body"]).split(), CHUNK_WORDS)]
 
