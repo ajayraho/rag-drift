@@ -47,23 +47,41 @@ flowchart TD
     A[GitHub Issues API] --> B["Ingest & validate<br/>(Airflow · hourly or on-demand)"]
     B --> C[("Postgres<br/>valid issues + run history")]
     B -.-> Q["Quarantine<br/>bad data + reason"]
-    B -.-> D["Drift detector + self-heal<br/>fixes renamed fields"]
-    D -.->|"healed mapping,<br/>applied next run"| B
-    C --> E["Incremental embed<br/>only new/changed"]
+    A --> CM["Comments sync<br/>(incremental)"] --> C
+    B -.-> D["Drift detector + self-heal<br/>matches renamed fields by stored values"]
+    D -.->|"confident: apply + replay quarantine"| B
+    D -.->|"unsure"| R["Review queue<br/>approve / reject in UI"]
+    C --> E["Incremental embed<br/>title-prefixed thread chunks"]
     E --> F[("ChromaDB<br/>vector store")]
-    F --> G["Agent<br/>Gemini · tool-calling"]
+    F --> RR["Cross-encoder reranker<br/>top 30 → best 5 issues"]
+    RR --> G["Agent<br/>Gemini · search + get_issue tools"]
     G --> H["FastAPI<br/>/ask · /eval · /trigger-ingestion"]
 ```
 
 Ingestion counts, drift alerts, and every eval run (retrieval Hit@5/MRR and answer faithfulness/relevance, each tied to the exact question-set version) are tracked in MLflow, and the whole stack is containerized with Docker Compose.
+
+## Results
+
+Retrieval measured on a human-reviewed golden question set (each question tied to the issue that answers it), logged in MLflow:
+
+| Setup | Hit@5 | MRR |
+|---|---|---|
+| Whole issue (title + body), vectors only | 0.783 | 0.667 |
+| + cross-encoder reranker | 0.835 | 0.722 |
+| Comment-thread chunks, vectors only | 0.835 | 0.744 |
+| **Comment-thread chunks + reranker** | **0.896** | **0.782** |
+
+Measured on 212 questions; re-checked on an expanded 304-question set: chunks 0.826 → chunks + reranker **0.895** (MRR 0.775). Chunking and reranking each add ~5 points of Hit@5 on their own.
 
 ## Capabilities
 
 - **Scheduled + on-demand ingestion** — an Airflow DAG refreshes every tracked repo hourly, incrementally (a per-repo cursor, so only records changed since that repo's last run), and can also be triggered on-demand from the UI for *any* public repo via Airflow's REST API. Repo names are validated against GitHub's naming rules before they get anywhere near a shell.
 - **Real validation, not a happy-path parser** — Pydantic schema checks catch malformed records (blank titles, invalid state values, missing required fields) and route them to a `quarantine` table with the actual reason, instead of crashing the run or silently dropping data.
 - **Incremental embedding** — a content hash decides whether a record actually changed; unchanged issues never get re-embedded, avoiding the classic "re-embed everything every run" cost blowup.
-- **Schema drift detection + self-healing** — fingerprints field presence/type every run; when a field disappears, fuzzy-matches it against the new payload shape and either auto-applies a high-confidence mapping (verified against the pipeline's *real* validation code, not simulated) or flags it for human review rather than guessing.
-- **A genuine tool-calling agent** — built on LangChain/LangGraph's current agent API, repo-scoped so it can never accidentally search the wrong repo's data, with a live streamed reasoning trace instead of a blind spinner.
+- **Schema drift detection + self-healing by evidence** — fingerprints field presence/type every run (ignoring batches under 20 records, with the GitHub API version pinned). When a field disappears, it finds the new key that holds the *exact values already stored* for the same issues (e.g. `body` gone, `description` matches 38/40 known issues). ≥90% evidence is auto-applied and quarantined records are replayed; weaker evidence goes to a review queue with approve/reject in the UI; no evidence means no guess.
+- **Comments + chunking** — comment threads are synced incrementally from GitHub's repo-wide comments endpoint, cleaned (issue-template boilerplate and bot comments removed), and split into ~150-word chunks that each start with the issue title. Search ranks chunks, then returns the best chunk per issue.
+- **Reranking** — vector search fetches the top 30 chunks; a cross-encoder (`ms-marco-MiniLM-L-6-v2`) re-reads each with the question and picks the best 5 issues.
+- **A genuine tool-calling agent** — built on LangChain/LangGraph's current agent API, with a search tool and a `get_issue` tool that opens an issue's full thread; repo-scoped so it can never accidentally search the wrong repo's data, with a live streamed reasoning trace instead of a blind spinner.
 - **Honest about not knowing** — the agent is explicitly instructed to say so when a search doesn't turn up anything relevant, instead of inventing a plausible-sounding answer.
 - **Bounded, not hanging, failures** — a hard timeout (enforced independently of the LLM SDK's own unreliable retry settings) means a slow or overloaded upstream model fails cleanly within a bounded time instead of hanging indefinitely — a real bug found and fixed during development, not a hypothetical.
 - **A real RAG eval, not just a demo** — each repo gets a *golden question set*: questions drafted from closed issues, where the source issue is the known right answer, then human-reviewed. Retrieval is scored objectively (Hit@5: did the right issue make the top 5? MRR: how high?) with no LLM calls, daily. The answer eval runs the real agent and has an LLM judge score faithfulness and answer relevance; judge failures are counted, never silently scored as 0.
@@ -75,7 +93,7 @@ Ingestion counts, drift alerts, and every eval run (retrieval Hit@5/MRR and answ
 
 <img src="images/no-answer.png" alt="Agent honestly reporting no relevant issues found, instead of hallucinating an answer" width="640" />
 
-**Drift detection + self-healing, proven live.** Not a canned example — this runs the real detector, healer, and extraction code against a randomized drift scenario every time, across 20 records. `state` gets auto-mapped to `status` at 84% confidence; `labels` has no confident match and is correctly left for human review, not guessed. One record also carries an unrelated, independent data issue — flagged separately from the schema drift, showing the two failure modes aren't conflated.
+**Drift detection + self-healing, proven live.** Not a canned example — this runs the real detector, healer, and extraction code against a randomized drift scenario every time, across 20 records. A plain rename (`state` → `status`) is healed because 20/20 known records carry identical values; a field that was renamed *and* reformatted has no evidence and is correctly left for human review, not guessed. *(Screenshot predates the switch from name matching to value evidence.)* One record also carries an unrelated, independent data issue — flagged separately from the schema drift, showing the two failure modes aren't conflated.
 
 <img src="images/drift-heal.png" alt="Drift and self-heal demo showing per-record diffs, guessed corrections, and before/after extraction proof" width="640" />
 
@@ -103,7 +121,7 @@ Trigger ingestion for a repo from the UI's top bar, then use the Ask / Drift & s
 
 ## Deployment
 
-Containerized as four services (Postgres, Chroma server, Airflow, FastAPI) and deployed to an Azure VM. The VM is started on-demand around active demos/interviews rather than left running 24/7 -- a deliberate cost decision for a portfolio project, not a limitation of the stack itself; the same Compose file runs identically on any VM with Docker installed.
+Containerized as four services (Postgres, Chroma server, Airflow, FastAPI) with Docker Compose; runs locally or on any VM with Docker installed.
 
 ## Database migrations
 
@@ -146,9 +164,10 @@ Unit tests cover schema validation, drift detection, self-heal matching, repo-na
 
 Said plainly, not hidden:
 
-- **Self-healing is name-similarity based**, not semantic -- it catches renames that keep recognizable characters (`state` -> `status`), not arbitrary synonyms.
+- **Self-healing needs overlap** -- it verifies a rename using issues already stored, so it needs at least 5 known issues in the drifted batch; a field that is renamed *and* reformatted (e.g. lowercase -> uppercase) has no evidence and always goes to human review.
+- **Golden questions are LLM-drafted from their source issue** (then human-reviewed), so absolute scores are somewhat optimistic; the before/after comparisons use the same set and are the meaningful part.
 - **The response cache is in-process and exact-match** -- no cross-instance sharing, no semantic matching of near-duplicate questions. A production deployment would want Redis and semantic caching.
 - **No provider fallback** -- if Gemini is down, the request fails cleanly (a real improvement over hanging), but there's no automatic failover to a second LLM provider.
 - **LLM-as-judge evaluation has known weaknesses** -- it's directionally useful for catching regressions over time, not a substitute for human eval, and shares blind spots with the model it's judging.
-- **No chunking** -- issues are embedded as whole documents (title + body), which works because they're short and self-contained; a source with long documents (wikis, PDFs) would need a real chunking strategy this project hasn't had to solve.
-- **Comments/discussions aren't ingested**, only issue metadata -- the natural next step for making retrieval genuinely more useful (surfacing actual fixes people posted, not just issue titles), deliberately scoped out given the added chunking and per-issue API-cost complexity it would introduce.
+- **No hybrid (BM25) search** -- with the reranker already at Hit@5 ≈ 0.90, a second keyword index wasn't worth keeping in sync.
+- **Hard-coded local credentials in docker-compose and no API auth** -- fine for a local demo, not for a public deployment.
